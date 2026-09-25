@@ -57,7 +57,8 @@ server.log
 db/*.db
 upload/
 download/
-scripts/
+scripts/*
+!scripts/doctor.mjs
 worklog.md
 .zscripts/
 .agent*

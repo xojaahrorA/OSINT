@@ -11,6 +11,7 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "eslint .",
+    "doctor": "node scripts/doctor.mjs",
     "postinstall": "prisma generate",
     "db:setup": "prisma generate && prisma db push --accept-data-loss",
     "db:push": "prisma db push --accept-data-loss",

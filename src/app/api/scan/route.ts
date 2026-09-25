@@ -177,11 +177,11 @@ export async function POST(req: NextRequest) {
         } catch {
           log(
             "warn",
-            "Z.ai dvigateli mavjud emas — ochiq dvigatellar rejimi (DuckDuckGo → Bing)"
+            "Z.ai dvigateli mavjud emas — ochiq dvigatellar rejimi (9 ta dvigatel zanjiri)"
           );
         }
       } else {
-        log("info", "SEARCH_ENGINE=open — ochiq dvigatellar rejimi (DuckDuckGo → Bing)");
+        log("info", "SEARCH_ENGINE=open — ochiq dvigatellar rejimi (9 ta dvigatel zanjiri)");
       }
 
       // Global so'rov navbati
@@ -205,6 +205,8 @@ export async function POST(req: NextRequest) {
       }
 
       let lastEngineLabel = "Z.ai";
+      const engineStats = new Map<string, number>();
+      let openZeroStreak = 0;
 
       const searchOnce = async (
         queryStr: string,
@@ -224,6 +226,7 @@ export async function POST(req: NextRequest) {
               "web_search"
             );
             lastEngineLabel = "Z.ai";
+            engineStats.set("Z.ai", (engineStats.get("Z.ai") ?? 0) + 1);
             return (raw ?? [])
               .filter((r) => r && r.url)
               .map((r) => ({
@@ -241,14 +244,32 @@ export async function POST(req: NextRequest) {
             // Boshqa xatolar (auth/tarmoq/429) — ochiq dvigatellarga zaxira o'tish
             log(
               "warn",
-              "Z.ai dvigateli xato berdi — ochiq dvigatellarga o'tilmoqda (DuckDuckGo → Bing)..."
+              "Z.ai dvigateli xato berdi — ochiq dvigatellarga o'tilmoqda (9 ta dvigatel zanjiri)..."
             );
           }
         }
         const open = await searchOpenWeb(queryStr, num);
         lastEngineLabel = open.engine;
-        if (open.results.length === 0 && open.errors.length > 0) {
-          log("warn", `Ochiq dvigatellar javob bermadi: ${open.errors.join("; ").slice(0, 130)}`);
+        if (open.results.length === 0) {
+          openZeroStreak++;
+          if (open.errors.length > 0) {
+            log(
+              "warn",
+              `Dvigatellar javob bermadi: ${open.errors.slice(0, 3).join("; ").slice(0, 170)}`
+            );
+          }
+          if (openZeroStreak === 3) {
+            log(
+              "warn",
+              "Ketma-ket 3 so'rov bo'sh — yuqoridagi «Diagnostika» tugmasini bosing yoki terminalda `npm run doctor` ishga tushiring"
+            );
+          }
+        } else {
+          openZeroStreak = 0;
+          engineStats.set(
+            open.engine,
+            (engineStats.get(open.engine) ?? 0) + 1
+          );
         }
         return open.results;
       };
@@ -383,6 +404,12 @@ export async function POST(req: NextRequest) {
 
       const elapsedMs = Date.now() - startedAt;
       const totalResults = [...collector.values()].reduce((acc, v) => acc + v.length, 0);
+      if (engineStats.size > 0) {
+        const dist = [...engineStats.entries()]
+          .map(([e, n]) => `${e} ×${n}`)
+          .join(", ");
+        log("sys", `Dvigatellar taqsimoti: ${dist}`);
+      }
       log("sys", `Skaner yakunlandi — ${totalResults} ta topilma, ${(elapsedMs / 1000).toFixed(1)}s`);
       log("sys", 'Endi "AI xulosa chiqarish" tugmasi bilan AI tahlilni so\'rashingiz mumkin.');
       send({ type: "done", totalResults, elapsedMs });

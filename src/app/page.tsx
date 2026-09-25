@@ -22,6 +22,7 @@ import {
   GraduationCap,
   Zap,
   Network,
+  Activity,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +37,7 @@ import { ResultCard } from "@/components/osint/result-card";
 import { AiPanel } from "@/components/osint/ai-panel";
 import { DeepPanel, type PendingPivot, type SourceStat } from "@/components/osint/deep-panel";
 import { ReviewPanel, type ReviewEntry } from "@/components/osint/review-panel";
+import { DiagnosticsDialog } from "@/components/osint/diagnostics-dialog";
 import {
   BookmarksSheet,
   type BookmarkItem,
@@ -839,6 +841,12 @@ export default function Home() {
             </Badge>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <DiagnosticsDialog>
+              <Button variant="outline" size="sm" className="gap-2">
+                <Activity className="w-4 h-4" />
+                <span className="hidden sm:inline">Diagnostika</span>
+              </Button>
+            </DiagnosticsDialog>
             <BookmarksSheet
               open={bookmarksOpen}
               onOpenChange={setBookmarksOpen}

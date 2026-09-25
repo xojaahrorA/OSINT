@@ -80,19 +80,43 @@ Sayt `http://localhost:3000` manzilida ochiladi.
 | `'next' is not recognized` (Windows) | `node_modules/.bin` yo'q — `npm install` bajaring; Node 20.9+ o'rnatilganini tekshiring |
 | `Port 3000 is already in use` | Boshqa jarayon band: Windows: `netstat -ano \| findstr :3000`, mac/linux: `lsof -i :3000` — keyin jarayonni o'chirish yoki `npm run dev -- -p 3001` |
 | `Warning: Next.js inferred your workspace root` (multiple lockfiles) | Yuqori papkada boshqa `package-lock.json` bor. Xavfsiz — loyiha `turbopack.root` bilan ildizni aniq belgilaydi. Yo'qotish uchun yuqoridagi ortiqcha lockfile'ni o'chiring |
-| Skaner 0 natija qaytaryapti | Jurnalda "Z.ai dvigateli mavjud emas" yozuvini qidiring: tizim avtomatik DuckDuckGo/Bing'ga o'tadi. Uy tarmog'ida ishlatsangiz ko'proq natija chiqadi; sandbox/server IP'lari qidiruv dvigatellari tomonidan bloklanishi mumkin |
+| Skaner 0 natija qaytaryapti | 1) Yuqoridagi **«Diagnostika»** tugmasini bosing (yoki terminalda `npm run doctor`) — har bir dvigatel alohida tekshiriladi va sababi ko'rsatiladi. 2) Server/datacenter IP'larni qidiruv dvigatellari bloklaydi — uy tarmog'ida ishlatib ko'ring |
 | AI xulosa chiqmayapti | Z.ai AI xizmati faqat Z.ai muhitida ishlaydi. Lokal mashinada AI o'rniga avtomatik **lokal statistik xulosa** ko'rsatiladi (modullar, topilmalar, faol manbalar) |
 | `npm install` sekin yoki xato | Node/npm versiyasini yangilang: `node -v` (20.9+ bo'lsin) |
 
 ### Qidiruv dvigatellari haqida
 
-Tizim 3 qatlamli dvigatel zanjiridan foydalanadi:
+Tizim ko'p qatlamli dvigatel zanjiridan foydalanadi:
 
 1. **Z.ai web_search** (Z.ai muhitida) — tez va aniq
-2. **DuckDuckGo (HTML)** — API kalitsiz, istalgan mashinada; uy internetida yaxshi ishlaydi
-3. **Bing (HTML)** — zaxira; operatorli so'rovlar (`site:`, `"aniq ibora"`) qattiq relevans filtrdan o'tadi (soxta natijalarga yo'q)
+2. **9 ta ochiq dvigatel** (API kalitsiz, istalgan mashinada): DuckDuckGo → DuckDuckGo Lite → Mojeek → Brave → Qwant → Bing → Google Yangiliklar RSS → Bing Yangiliklar RSS → SearXNG
+
+Har bir natija ikki qatlamli filtdan o'tadi:
+- **Operator filtri** — `site:` yoki `"aniq ibora"` so'rovlariga dvigatel mos bo'lmagan (soxta) natija qaytarsa, ular olib tashlanadi
+- **Maqsad mosligi filtri** — sarlavha/snippet/havolada maqsad so'zlari umuman uchramasa (ba'zi dvigatellar botga butunlay boshqa so'rov natijasini qaytaradi), natija soxta deb filtrlanadi
+
+Agar operatorli so'rov bo'yicha hammasi bo'sh bo'lsa, tizim so'rovni avtomatik soddalashtirib qayta qidiradi (masalan `site:linkedin.com/in "Tukhtayev"` → `Tukhtayev linkedin profile`) va bunday natijalar `*` belgisi bilan ajratiladi.
 
 Majburiy rejim: `.env` faylga `SEARCH_ENGINE=open` yozsangiz, Z.ai umuman ishlatilmaydi (lokal mashina uchun tavsiya etiladi).
+
+### Diagnostika (npm run doctor)
+
+Lokal mashinada qidiruv ishlamasa:
+
+```bash
+npm run doctor
+```
+
+Skript quyidagilarni tekshiradi va o'zbekcha xulosada ko'rsatadi:
+
+- Node.js versiyasi (18+ bo'lishi shart, 20+ tavsiya)
+- Kod versiyasi (repo yangilanganini — `git pull` kerakligini)
+- DNS tarjimoni (3 ta doman)
+- Har bir 9 ta qidiruv dvigatelini real so'rov bilan alohida
+
+Ilovada ham yuqori panelda **«Diagnostika»** tugmasi bor — shu tekshiruvni brauzerdan bajaradi.
+
+**Muhim:** sandbox/server (datacenter) IP'larda ko'pchilik dvigatellar bloklaydi — bu normal. Uy internetidan (residential IP) foydalansangiz 4-6 ta dvigatel ochiq bo'ladi.
 
 ## Loyiha tuzilishi
 
