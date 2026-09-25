@@ -69,8 +69,8 @@ export function TerminalLog({
             har bir modul ishi jonli ko&apos;rinadi.
           </p>
         ) : (
-          logs.map((l) => (
-            <div key={l.id} className="flex gap-2">
+          logs.map((l, i) => (
+            <div key={`${l.id}-${i}`} className="flex gap-2">
               <span className="text-slate-600 shrink-0">{l.time}</span>
               <span className={`${LEVEL_STYLE[l.level]} shrink-0`}>
                 {LEVEL_PREFIX[l.level]}

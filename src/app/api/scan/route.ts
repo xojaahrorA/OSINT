@@ -76,7 +76,8 @@ export async function POST(req: NextRequest) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
-      let logId = 0;
+      // Id'lar so'rov bazasida unikal bo'lishi uchun vaqt belgisi ofseti (har skanerdan 1,2,3... boshlanmaydi)
+      let logId = Date.now();
 
       const send = (ev: ScanEvent) => {
         if (closed || req.signal.aborted) return;

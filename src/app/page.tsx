@@ -210,9 +210,10 @@ export default function Home() {
   const pushLog = (level: LogLine["level"], message: string) => {
     const d = new Date();
     const p = (n: number) => String(n).padStart(2, "0");
+    const id = ++logIdRef.current;
     setLogs((prev) => [
       ...prev,
-      { id: ++logIdRef.current, time: `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`, level, message },
+      { id, time: `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`, level, message },
     ]);
   };
 
@@ -254,7 +255,12 @@ export default function Home() {
     const handleEvent = (ev: ScanEvent) => {
       switch (ev.type) {
         case "log":
-          if (ev.log) setLogs((prev) => [...prev, ev.log!]);
+          if (ev.log) {
+            // Server log id'larini klient hisoblagichi orqali qayta belgilaymiz —
+            // har skaner so'rovida server 1,2,3... dan boshlaydi, key"lar to'qnashmasligi uchun
+            const entry: LogLine = { ...ev.log, id: ++logIdRef.current };
+            setLogs((prev) => [...prev, entry]);
+          }
           break;
         case "module_start":
           setModules((prev) =>
