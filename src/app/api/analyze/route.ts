@@ -33,6 +33,83 @@ Kerak bo'lsa markdown ishlat (- ro'yxat, **qalin**).`;
 
 const HARD_TIMEOUT_MS = 90000;
 
+// AI mavjud bo'lmaganda lokal statistik xulosa — skaner natijalaridan avtomatik tayyorlanadi
+function buildLocalSummary(
+  query: string,
+  typeLabel: string,
+  modules: FindingModule[],
+  isQuestion: boolean
+): string {
+  const nonEmpty = modules.filter((m) => m.results?.length > 0);
+  const total = nonEmpty.reduce((a, m) => a + m.results.length, 0);
+
+  const domainCount = new Map<string, number>();
+  for (const m of nonEmpty) {
+    for (const r of m.results) {
+      try {
+        const h = new URL(r.url).hostname.replace(/^www\./, "");
+        domainCount.set(h, (domainCount.get(h) ?? 0) + 1);
+      } catch {
+        /* noto'g'ri url */
+      }
+    }
+  }
+  const topDomains = [...domainCount.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6);
+
+  const lines: string[] = [
+    "> ⚠️ **AI xizmatiga hozir ulanib bo'lmadi** — quyida skaner natijalari asosida avtomatik lokal xulosa keltirildi. AI tahlilni keyinroq qayta urinib ko'ring.",
+    "",
+    "## Umumiy xulosa",
+    "",
+    `"${query}" (${typeLabel}) bo'yicha skaner **${nonEmpty.length} ta modul** bo'yicha ochiq manbalarda qidiruv o'tkazdi va **${total} ta topilma** yig'di.`,
+    isQuestion
+      ? "Savolingizga to'liq javob berish uchun AI kerak — hozir faqat topilmalarning tuzilgan ko'rinishi beriladi."
+      : "Bu topilmalar maqsadning ochiq tarmoqlardagi ko'rinish darajasini aks ettiradi.",
+    "",
+    "## Asosiy topilmalar",
+    "",
+  ];
+
+  for (const m of nonEmpty.slice(0, 6)) {
+    lines.push(`**${m.moduleTitle}** — ${m.results.length} ta natija:`);
+    for (const r of m.results.slice(0, 3)) {
+      const host = (() => {
+        try {
+          return new URL(r.url).hostname.replace(/^www\./, "");
+        } catch {
+          return "";
+        }
+      })();
+      lines.push(`- [${(r.name || host).slice(0, 90)}](${r.url})${host ? ` — ${host}` : ""}`);
+    }
+    lines.push("");
+  }
+
+  if (topDomains.length > 0) {
+    lines.push("## Eng faol manbalar", "");
+    for (const [dom, cnt] of topDomains) {
+      lines.push(`- ${dom} — ${cnt} ta topilma`);
+    }
+    lines.push("");
+  }
+
+  lines.push(
+    "## Tavsiyalar",
+    "",
+    "- Topilmalarni ko'zdan kechirib, keraklilarini «Saqlash» tugmasi bilan bookmark'ga qo'shing.",
+    "- Har bir kartadagi «+» tugmasi orqali istalgan iz bo'yicha chuqur qidiruvni ishga tushirishingiz mumkin.",
+    "- AI xulosa tugmasini keyinroq yana bosing — xizmat tiklanganda to'liq AI tahlil tayyor bo'ladi.",
+    "",
+    "## Etik eslatma",
+    "",
+    "Barcha topilmalar faqat ochiq (public) manbalardan olingan; tahlil o'quv maqsadida."
+  );
+
+  return lines.join("\n");
+}
+
 export async function POST(req: NextRequest) {
   let body: {
     query?: string;
@@ -209,9 +286,14 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch {
-    return Response.json(
-      { error: "AI tahlil xizmatiga ulanib bo'lmadi. Keyinroq urinib ko'ring." },
-      { status: 502 }
-    );
+    // AI mavjud emas (lokal mashinada SDK kredensiali yo'q) — 502 o'rniga
+    // lokal statistik xulosa stream qilinadi, UI xatosiz ko'rsatadi.
+    const summary = buildLocalSummary(query, typeLabel, modules, !!question);
+    return new Response(summary, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+      },
+    });
   }
 }

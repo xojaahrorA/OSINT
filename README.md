@@ -79,8 +79,20 @@ Sayt `http://localhost:3000` manzilida ochiladi.
 | `Cannot find module '@prisma/client'` | Paketlar to'liq o'rnatilmagan — `npm install` qayta bajaring |
 | `'next' is not recognized` (Windows) | `node_modules/.bin` yo'q — `npm install` bajaring; Node 20.9+ o'rnatilganini tekshiring |
 | `Port 3000 is already in use` | Boshqa jarayon band: Windows: `netstat -ano \| findstr :3000`, mac/linux: `lsof -i :3000` — keyin jarayonni o'chirish yoki `npm run dev -- -p 3001` |
-| Qidiruv/AI javob bermaydi | `z-ai-web-dev-sdk` Z.ai muhitida ishlaydi; o'z kompyuterda Z.ai kredensiallari sozlangan bo'lishi kerak |
+| `Warning: Next.js inferred your workspace root` (multiple lockfiles) | Yuqori papkada boshqa `package-lock.json` bor. Xavfsiz — loyiha `turbopack.root` bilan ildizni aniq belgilaydi. Yo'qotish uchun yuqoridagi ortiqcha lockfile'ni o'chiring |
+| Skaner 0 natija qaytaryapti | Jurnalda "Z.ai dvigateli mavjud emas" yozuvini qidiring: tizim avtomatik DuckDuckGo/Bing'ga o'tadi. Uy tarmog'ida ishlatsangiz ko'proq natija chiqadi; sandbox/server IP'lari qidiruv dvigatellari tomonidan bloklanishi mumkin |
+| AI xulosa chiqmayapti | Z.ai AI xizmati faqat Z.ai muhitida ishlaydi. Lokal mashinada AI o'rniga avtomatik **lokal statistik xulosa** ko'rsatiladi (modullar, topilmalar, faol manbalar) |
 | `npm install` sekin yoki xato | Node/npm versiyasini yangilang: `node -v` (20.9+ bo'lsin) |
+
+### Qidiruv dvigatellari haqida
+
+Tizim 3 qatlamli dvigatel zanjiridan foydalanadi:
+
+1. **Z.ai web_search** (Z.ai muhitida) — tez va aniq
+2. **DuckDuckGo (HTML)** — API kalitsiz, istalgan mashinada; uy internetida yaxshi ishlaydi
+3. **Bing (HTML)** — zaxira; operatorli so'rovlar (`site:`, `"aniq ibora"`) qattiq relevans filtrdan o'tadi (soxta natijalarga yo'q)
+
+Majburiy rejim: `.env` faylga `SEARCH_ENGINE=open` yozsangiz, Z.ai umuman ishlatilmaydi (lokal mashina uchun tavsiya etiladi).
 
 ## Loyiha tuzilishi
 

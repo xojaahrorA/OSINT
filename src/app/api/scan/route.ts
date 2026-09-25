@@ -7,6 +7,7 @@ import {
   type TargetType,
   type ScanEvent,
 } from "@/lib/osint";
+import { searchOpenWeb } from "@/lib/search-engines";
 
 export const maxDuration = 180;
 
@@ -16,6 +17,10 @@ const VALID_TYPES: TargetType[] = ["username", "email", "phone", "name", "domain
 // (429 Too Many Requests) chekloviga tushmaslik uchun.
 const CONCURRENCY = 2;
 const STAGGER_MS = 400;
+// Ochiq dvigatellar (DuckDuckGo/Bing) scraping'da og'irroq cheklovlar qo'yadi —
+// ulardan foydalanilganda ketma-ket va sekinroq so'rov yuboriladi.
+const OPEN_STAGGER_MS = 2200;
+const OPEN_CONCURRENCY = 1;
 const QUERY_TIMEOUT_MS = 25000;
 const RETRY_DELAYS_MS = [1500, 3500, 7000];
 
@@ -160,15 +165,23 @@ export async function POST(req: NextRequest) {
       );
       log("sys", "Rejim: PASSIVE OSINT — faqat ochiq manbalar, tizimga ruxsatsiz kirish yo'q.");
 
-      let zai: Awaited<ReturnType<typeof ZAI.create>>;
-      try {
-        zai = await ZAI.create();
-        log("ok", "Qidiruv dvigateliga ulanish o'rnatildi");
-      } catch {
-        log("error", "Qidiruv dvigateliga ulanib bo'lmadi. Keyinroq urinib ko'ring.");
-        send({ type: "error", message: "Dvigatelga ulanish xatosi" });
-        close();
-        return;
+      // Z.ai SDK faqat Z.ai muhitida ishlaydi — lokal mashinalarda mavjud emas.
+      // Bo'lmasa skaner to'xtamaydi: ochiq dvigatellarga (DuckDuckGo/Bing) o'tadi.
+      // SEARCH_ENGINE=open — Z.ai'ni umuman ishlatmaslik (lokal majburiy rejim)
+      const enginePref = (process.env.SEARCH_ENGINE ?? "auto").toLowerCase();
+      let zai: Awaited<ReturnType<typeof ZAI.create>> | null = null;
+      if (enginePref !== "open") {
+        try {
+          zai = await ZAI.create();
+          log("ok", "Z.ai qidiruv dvigateliga ulanish o'rnatildi");
+        } catch {
+          log(
+            "warn",
+            "Z.ai dvigateli mavjud emas — ochiq dvigatellar rejimi (DuckDuckGo → Bing)"
+          );
+        }
+      } else {
+        log("info", "SEARCH_ENGINE=open — ochiq dvigatellar rejimi (DuckDuckGo → Bing)");
       }
 
       // Global so'rov navbati
@@ -191,31 +204,53 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      let lastEngineLabel = "Z.ai";
+
       const searchOnce = async (
         queryStr: string,
         num: number,
         recency?: number
       ): Promise<SearchResultItem[]> => {
-        const args: { query: string; num: number; recency_days?: number } = {
-          query: queryStr,
-          num,
-        };
-        if (recency) args.recency_days = recency;
-        const raw = await withTimeout(
-          zai.functions.invoke("web_search", args),
-          QUERY_TIMEOUT_MS,
-          "web_search"
-        );
-        return (raw ?? [])
-          .filter((r) => r && r.url)
-          .map((r) => ({
-            name: r.name || r.host_name || queryStr,
-            url: r.url,
-            snippet: r.snippet || "",
-            host_name: r.host_name || new URL(r.url).hostname,
-            date: r.date || undefined,
-            favicon: r.favicon || undefined,
-          }));
+        if (zai) {
+          try {
+            const args: { query: string; num: number; recency_days?: number } = {
+              query: queryStr,
+              num,
+            };
+            if (recency) args.recency_days = recency;
+            const raw = await withTimeout(
+              zai.functions.invoke("web_search", args),
+              QUERY_TIMEOUT_MS,
+              "web_search"
+            );
+            lastEngineLabel = "Z.ai";
+            return (raw ?? [])
+              .filter((r) => r && r.url)
+              .map((r) => ({
+                name: r.name || r.host_name || queryStr,
+                url: r.url,
+                snippet: r.snippet || "",
+                host_name: r.host_name || new URL(r.url).hostname,
+                date: r.date || undefined,
+                favicon: r.favicon || undefined,
+              }));
+          } catch (e) {
+            const msg = String(e);
+            // 422 — dvigatel ushbu so'rov bo'yicha natija yo'q deb qaytardi: yuqoriga o'tkazamiz
+            if (msg.includes("422") || msg.toLowerCase().includes("no search results")) throw e;
+            // Boshqa xatolar (auth/tarmoq/429) — ochiq dvigatellarga zaxira o'tish
+            log(
+              "warn",
+              "Z.ai dvigateli xato berdi — ochiq dvigatellarga o'tilmoqda (DuckDuckGo → Bing)..."
+            );
+          }
+        }
+        const open = await searchOpenWeb(queryStr, num);
+        lastEngineLabel = open.engine;
+        if (open.results.length === 0 && open.errors.length > 0) {
+          log("warn", `Ochiq dvigatellar javob bermadi: ${open.errors.join("; ").slice(0, 130)}`);
+        }
+        return open.results;
       };
 
       const searchWithRetry = async (
@@ -272,7 +307,7 @@ export async function POST(req: NextRequest) {
             }
             log(
               "ok",
-              `[${job.moduleTitle}] ✓ ${added} ta yangi natija — "${job.query.slice(0, 56)}${job.query.length > 56 ? "..." : ""}"`
+              `[${job.moduleTitle}] ✓ ${added} ta yangi natija${lastEngineLabel ? ` (${lastEngineLabel})` : ""} — "${job.query.slice(0, 56)}${job.query.length > 56 ? "..." : ""}"`
             );
           } catch (e) {
             const st = doneByModule.get(job.moduleId);
@@ -293,7 +328,7 @@ export async function POST(req: NextRequest) {
           }
           processed++;
           send({ type: "progress", count: processed, total: queue.length });
-          await sleep(STAGGER_MS);
+          await sleep(zai ? STAGGER_MS : OPEN_STAGGER_MS);
         }
       };
 
@@ -310,7 +345,10 @@ export async function POST(req: NextRequest) {
       }
 
       await Promise.all(
-        Array.from({ length: Math.min(CONCURRENCY, queue.length || 1) }, () => runNext())
+        Array.from(
+          { length: Math.min(zai ? CONCURRENCY : OPEN_CONCURRENCY, queue.length || 1) },
+          () => runNext()
+        )
       );
 
       // Yakuniy module_done hodisalari
