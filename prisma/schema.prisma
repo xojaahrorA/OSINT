@@ -1,0 +1,21 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Bookmark {
+  id        String   @id @default(cuid())
+  title     String
+  url       String
+  snippet   String?
+  module    String?
+  moduleName String?
+  query     String?
+  createdAt DateTime @default(now())
+
+  @@unique([url, query])
+}
