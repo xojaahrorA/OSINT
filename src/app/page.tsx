@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Radar,
   ScanSearch,
@@ -20,6 +20,8 @@ import {
   Target,
   History,
   GraduationCap,
+  Zap,
+  Network,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,15 +34,22 @@ import { useToast } from "@/hooks/use-toast";
 import { TerminalLog } from "@/components/osint/terminal-log";
 import { ResultCard } from "@/components/osint/result-card";
 import { AiPanel } from "@/components/osint/ai-panel";
+import { DeepPanel, type PendingPivot, type SourceStat } from "@/components/osint/deep-panel";
+import { ReviewPanel, type ReviewEntry } from "@/components/osint/review-panel";
 import {
   BookmarksSheet,
   type BookmarkItem,
 } from "@/components/osint/bookmarks-sheet";
 import {
   OSINT_MODULES,
+  PIVOT_PRIORITY,
   TARGET_TYPES,
+  extractPivots,
+  normalizeUrl,
+  type DeepStep,
   type LogLine,
   type ModuleResult,
+  type PivotCandidate,
   type ScanEvent,
   type SearchResultItem,
   type TargetType,
@@ -66,9 +75,42 @@ const EXAMPLES: { type: TargetType; query: string }[] = [
   { type: "ip", query: "8.8.8.8" },
 ];
 
+// Rekursiv dvigatel chegaralari — rate-limit va beqarorlikka qarshi himoya
+const MAX_SCANS = 8; // bitta sessiyada eng ko'pi bilan 8 skaner
+const MAX_DEPTH_DEEP = 3; // chuqur rejimda rekursiya chuqurligi
+const AUTO_PER_SCAN = 2; // har skanerdan avtomatik navbatga chiqadigan pivotlar
+
+type VerdictInfo = { verdict: "related" | "unsure" | "unrelated"; reason: string };
+
+interface NewResult {
+  key: string;
+  item: SearchResultItem;
+  moduleTitle: string;
+}
+
+interface PivotJob {
+  kind: TargetType;
+  value: string;
+  depth: number;
+}
+
+const STEP_BADGES: Record<DeepStep, string> = {
+  idle: "",
+  global: "1-bosqich · global taramok",
+  focused: "2-bosqich · manba fokusi",
+  review: "AI solishtirish",
+  pivots: "chuqur pivot qidiruvi",
+  done: "yakunlandi",
+  stopped: "to'xtatildi",
+};
+
 function fmtElapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function moduleTitleOf(id: string): string {
+  return OSINT_MODULES.find((m) => m.id === id)?.title ?? id;
 }
 
 export default function Home() {
@@ -76,13 +118,23 @@ export default function Home() {
 
   const [type, setType] = useState<TargetType>("username");
   const [input, setInput] = useState("");
-  const [phase, setPhase] = useState<"idle" | "scanning" | "done">("idle");
+  const [mode, setMode] = useState<"normal" | "deep">("deep");
+  const [step, setStep] = useState<DeepStep>("idle");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [modules, setModules] = useState<ModuleResult[]>([]);
   const [activeTab, setActiveTab] = useState<string>("");
   const [elapsed, setElapsed] = useState(0);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [target, setTarget] = useState<{ type: TargetType; query: string } | null>(null);
+  const [activeLabel, setActiveLabel] = useState<string | null>(null);
+
+  const [pendingCandidates, setPendingCandidates] = useState<PendingPivot[]>([]);
+  const [scansDone, setScansDone] = useState(0);
+  const [focusIds, setFocusIds] = useState<string[]>([]);
+  const [verdicts, setVerdicts] = useState<Record<string, VerdictInfo>>({});
+  const [skipped, setSkipped] = useState<Set<string>>(new Set());
+  const [reviewEntries, setReviewEntries] = useState<ReviewEntry[]>([]);
+  const [reviewLoading, setReviewLoading] = useState(false);
 
   const [aiText, setAiText] = useState("");
   const [aiStatus, setAiStatus] = useState<"idle" | "streaming" | "done" | "error">("idle");
@@ -98,6 +150,27 @@ export default function Home() {
   const aiAbortRef = useRef<AbortController | null>(null);
   const startedAtRef = useRef(0);
   const touchedTabRef = useRef(false);
+  const logIdRef = useRef(0);
+  const processingRef = useRef(false);
+
+  // Dvigatel holati — render'ga ta'sir qilmaydigan ichki holat
+  const engineRef = useRef({
+    stopped: false,
+    queue: [] as PivotJob[],
+    runSet: new Set<string>(),
+    pending: [] as PendingPivot[],
+    knownUrls: new Set<string>(),
+    scansDone: 0,
+    rootQuery: "",
+    rootType: "username" as TargetType,
+    maxDepth: MAX_DEPTH_DEEP,
+  });
+  const resultsRef = useRef<Map<string, { item: SearchResultItem; moduleTitle: string }>>(new Map());
+  const verdictsRef = useRef<Record<string, VerdictInfo>>({});
+  const skippedRef = useRef<Set<string>>(new Set());
+  const statsRef = useRef<Record<string, number>>({});
+
+  const busy = step === "global" || step === "focused" || step === "pivots";
 
   useEffect(() => {
     try {
@@ -110,12 +183,12 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (phase !== "scanning") return;
+    if (!busy) return;
     const t = setInterval(() => {
       setElapsed(Date.now() - startedAtRef.current);
     }, 500);
     return () => clearInterval(t);
-  }, [phase]);
+  }, [busy]);
 
   const loadBookmarks = async () => {
     setBookmarksLoading(true);
@@ -134,62 +207,14 @@ export default function Home() {
     setBookmarksLoading(false);
   };
 
-  const pushLog = (l: LogLine) => setLogs((prev) => [...prev, l]);
-
-  const handleEvent = useCallback((ev: ScanEvent) => {
-    switch (ev.type) {
-      case "log":
-        if (ev.log) pushLog(ev.log);
-        break;
-      case "module_start":
-        setModules((prev) => {
-          if (prev.some((m) => m.moduleId === ev.moduleId)) return prev;
-          return [
-            ...prev,
-            {
-              moduleId: ev.moduleId!,
-              moduleTitle: ev.moduleTitle ?? ev.moduleId!,
-              status: "running",
-              count: 0,
-              results: [],
-            },
-          ];
-        });
-        break;
-      case "module_done":
-        setModules((prev) => {
-          const others = prev.filter((m) => m.moduleId !== ev.moduleId);
-          return [
-            ...others,
-            {
-              moduleId: ev.moduleId!,
-              moduleTitle: ev.moduleTitle ?? ev.moduleId!,
-              status: "done",
-              count: ev.count ?? 0,
-              results: ev.results ?? [],
-            },
-          ];
-        });
-        if (!touchedTabRef.current && (ev.count ?? 0) > 0) {
-          setActiveTab(ev.moduleId!);
-        }
-        break;
-      case "progress":
-        setProgress({ done: ev.count ?? 0, total: ev.total ?? 0 });
-        break;
-      case "done":
-        setPhase("done");
-        break;
-      case "error":
-        setPhase("done");
-        toast({
-          title: "Skaner xatosi",
-          description: ev.message,
-          variant: "destructive",
-        });
-        break;
-    }
-  }, [toast]);
+  const pushLog = (level: LogLine["level"], message: string) => {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    setLogs((prev) => [
+      ...prev,
+      { id: ++logIdRef.current, time: `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`, level, message },
+    ]);
+  };
 
   const saveRecent = (t: TargetType, q: string) => {
     setRecent((prev) => {
@@ -203,46 +228,114 @@ export default function Home() {
     });
   };
 
-  const startScan = async () => {
-    const query = input.trim();
-    if (query.length < 2) {
-      toast({
-        title: "Maqsad juda qisqa",
-        description: "Iltimos, kamida 2 belgidan iborat maqsad kiriting.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    aiAbortRef.current?.abort();
-    scanAbortRef.current?.abort();
+  // ===== Bitta skaner (NDJSON oqim) — natijalarni modullar bilan birlashtiradi =====
+  const runScanTarget = async (
+    job: PivotJob,
+    querySet: "core" | "deep-only" | "extended",
+    moduleFilter?: string[]
+  ): Promise<NewResult[]> => {
+    const eng = engineRef.current;
     const ctrl = new AbortController();
     scanAbortRef.current = ctrl;
-
-    touchedTabRef.current = false;
     startedAtRef.current = Date.now();
-    setPhase("scanning");
-    setLogs([]);
-    setModules([]);
-    setAiText("");
-    setAiStatus("idle");
-    setElapsed(0);
+    setActiveLabel(job.value);
     setProgress(null);
-    setTarget({ type, query });
-    saveRecent(type, query);
+
+    const scanNo = eng.scansDone + 1;
+    const modeLabel =
+      querySet === "core" ? "GLOBAL" : querySet === "deep-only" ? "FOKUS-CHUQUR" : "KENGAYTIRILGAN";
+    pushLog(
+      "sys",
+      `=== SKANER #${scanNo} · "${job.value}" (${job.kind.toUpperCase()}, ${modeLabel}, chuqurlik ${job.depth}) ===`
+    );
+
+    const newResults: NewResult[] = [];
+
+    const handleEvent = (ev: ScanEvent) => {
+      switch (ev.type) {
+        case "log":
+          if (ev.log) setLogs((prev) => [...prev, ev.log!]);
+          break;
+        case "module_start":
+          setModules((prev) =>
+            prev.some((m) => m.moduleId === ev.moduleId)
+              ? prev
+              : [
+                  ...prev,
+                  {
+                    moduleId: ev.moduleId!,
+                    moduleTitle: ev.moduleTitle ?? ev.moduleId!,
+                    status: "running",
+                    count: 0,
+                    results: [],
+                  },
+                ]
+          );
+          break;
+        case "module_done": {
+          const incoming = ev.results ?? [];
+          setModules((prev) => {
+            const existing = prev.find((m) => m.moduleId === ev.moduleId);
+            if (!existing) {
+              return [
+                ...prev,
+                {
+                  moduleId: ev.moduleId!,
+                  moduleTitle: ev.moduleTitle ?? ev.moduleId!,
+                  status: "done",
+                  count: incoming.length,
+                  results: incoming,
+                },
+              ];
+            }
+            const seen = new Set(existing.results.map((r) => normalizeUrl(r.url)));
+            const fresh = incoming.filter((r) => {
+              const k = normalizeUrl(r.url);
+              if (seen.has(k)) return false;
+              seen.add(k);
+              return true;
+            });
+            return prev.map((m) =>
+              m.moduleId === ev.moduleId
+                ? { ...m, status: "done" as const, count: existing.count + fresh.length, results: [...existing.results, ...fresh] }
+                : m
+            );
+          });
+          const mTitle = ev.moduleTitle ?? ev.moduleId!;
+          let added = 0;
+          for (const r of incoming) {
+            const k = normalizeUrl(r.url);
+            if (!eng.knownUrls.has(k)) {
+              eng.knownUrls.add(k);
+              newResults.push({ key: k, item: r, moduleTitle: mTitle });
+              resultsRef.current.set(k, { item: r, moduleTitle: mTitle });
+              added++;
+            }
+          }
+          statsRef.current[ev.moduleId!] = (statsRef.current[ev.moduleId!] ?? 0) + added;
+          if (!touchedTabRef.current && added > 0) setActiveTab(ev.moduleId!);
+          break;
+        }
+        case "progress":
+          setProgress({ done: ev.count ?? 0, total: ev.total ?? 0 });
+          break;
+        case "error":
+          pushLog("error", ev.message ?? "Skaner xatosi");
+          break;
+      }
+    };
 
     try {
       const res = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type, query }),
+        body: JSON.stringify({ type: job.kind, query: job.value, querySet, modules: moduleFilter }),
         signal: ctrl.signal,
       });
       if (!res.ok || !res.body) {
         const err = await res.json().catch(() => ({ error: "Server xatosi" }));
         throw new Error(err.error || "Server xatosi");
       }
-
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -261,29 +354,364 @@ export default function Home() {
           }
         }
       }
-      setPhase((p) => (p === "scanning" ? "done" : p));
     } catch (e) {
-      if ((e as Error).name === "AbortError") {
-        setPhase("done");
-        pushLog({
-          id: Date.now(),
-          time: "",
-          level: "warn",
-          message: "Skaner foydalanuvchi tomonidan to'xtatildi.",
-        });
-      } else {
-        setPhase("done");
+      if ((e as Error).name !== "AbortError") {
+        pushLog("error", `Skaner xatosi: ${(e as Error).message}`);
         toast({
-          title: "Skanerni ishga tushirib bo'lmadi",
+          title: "Skaner xatosi",
           description: (e as Error).message,
           variant: "destructive",
         });
       }
     }
+
+    eng.scansDone++;
+    setScansDone(eng.scansDone);
+    return newResults;
   };
 
-  const stopScan = () => {
+  // ===== Pivotlar yigimi — yangi natijalardan avtomatik izlarni ajratadi =====
+  const harvestPivots = (newResults: NewResult[]) => {
+    const eng = engineRef.current;
+    let addedCount = 0;
+    for (const { key, item } of newResults) {
+      if (skippedRef.current.has(key)) continue;
+      for (const p of extractPivots(item)) {
+        const pk = `${p.kind}:${p.value}`;
+        if (eng.runSet.has(pk)) continue;
+        if (eng.pending.some((x) => x.kind === p.kind && x.value === p.value)) continue;
+        eng.pending.push({ kind: p.kind, value: p.value });
+        addedCount++;
+      }
+    }
+    setPendingCandidates(eng.pending.filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`)));
+    if (addedCount > 0) {
+      pushLog("ok", `${addedCount} ta yangi iz (pivot) ajratib olindi — navbatda`);
+    }
+  };
+
+  // ===== AI solishtirish — natijalarni maqsad bilan taqqoslaydi =====
+  const applyVerdicts = async (items: NewResult[], label: string): Promise<boolean> => {
+    const eng = engineRef.current;
+    try {
+      const res = await fetch("/api/relevance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: eng.rootQuery,
+          type: eng.rootType,
+          results: items.map((r) => ({
+            id: r.key,
+            title: r.item.name,
+            snippet: r.item.snippet,
+            url: r.item.url,
+            moduleTitle: r.moduleTitle,
+          })),
+        }),
+      });
+      if (!res.ok) throw new Error("Server xatosi");
+      const data = await res.json();
+      const list = Array.isArray(data.verdicts) ? data.verdicts : [];
+      let related = 0;
+      let unsure = 0;
+      let unrelated = 0;
+      for (const v of list) {
+        if (!v?.id || !v?.verdict) continue;
+        verdictsRef.current[v.id as string] = {
+          verdict: v.verdict as VerdictInfo["verdict"],
+          reason: String(v.reason ?? ""),
+        };
+        if (v.verdict === "related") related++;
+        else if (v.verdict === "unsure") unsure++;
+        else unrelated++;
+      }
+      setVerdicts({ ...verdictsRef.current });
+      pushLog(
+        "ok",
+        `AI solishtirish${label ? ` (${label})` : ""}: ${related} mos · ${unsure} aniq emas · ${unrelated} mos emas`
+      );
+      return list.length > 0;
+    } catch {
+      pushLog("warn", "AI solishtirish bajarilmadi — barcha natijalar saqlanib qoldi");
+      return false;
+    }
+  };
+
+  const buildReviewEntries = (): ReviewEntry[] => {
+    const out: ReviewEntry[] = [];
+    for (const [key, v] of resultsRef.current) {
+      const vd = verdictsRef.current[key];
+      if (!vd || vd.verdict === "related" || skippedRef.current.has(key)) continue;
+      out.push({
+        key,
+        title: v.item.name,
+        url: v.item.url,
+        host: v.item.host_name,
+        moduleTitle: v.moduleTitle,
+        verdict: vd.verdict as "unsure" | "unrelated",
+        reason: vd.reason,
+      });
+    }
+    return out;
+  };
+
+  const runReviewGate = async (): Promise<boolean> => {
+    const eng = engineRef.current;
+    const items = [...resultsRef.current.entries()]
+      .filter(([key]) => !skippedRef.current.has(key))
+      .map(([key, v]) => ({ key, item: v.item, moduleTitle: v.moduleTitle }))
+      .slice(0, 40);
+    if (items.length === 0) return false;
+    setReviewLoading(true);
+    pushLog("info", "AI topilmalarni maqsad va bir-biri bilan solishtiryapti...");
+    const ok = await applyVerdicts(items, "asosiy taramok");
+    setReviewLoading(false);
+    const flagged = buildReviewEntries();
+    setReviewEntries(flagged);
+    return ok && flagged.length > 0;
+  };
+
+  const finalVerdictPass = async () => {
+    const items = [...resultsRef.current.entries()]
+      .filter(([key]) => !verdictsRef.current[key] && !skippedRef.current.has(key))
+      .map(([key, v]) => ({ key, item: v.item, moduleTitle: v.moduleTitle }))
+      .slice(0, 40);
+    if (items.length === 0) return;
+    pushLog("info", "AI pivot skanerlari natijalarini ham solishtiryapti...");
+    await applyVerdicts(items, "pivotlar");
+    setReviewEntries(buildReviewEntries());
+  };
+
+  // ===== Rekursiv navbat protsessori — pivot skanerlarni ketma-ket ishga tushiradi =====
+  const processQueue = async () => {
+    if (processingRef.current) return;
+    processingRef.current = true;
+    const eng = engineRef.current;
+    try {
+      while (!eng.stopped && eng.queue.length > 0 && eng.scansDone < MAX_SCANS) {
+        const job = eng.queue.shift()!;
+        const newResults = await runScanTarget(job, "extended");
+        if (eng.stopped) break;
+        harvestPivots(newResults);
+        // Rekursiya: yangi topilgan izlardan eng ustuvorlari navbatga
+        if (job.depth + 1 <= eng.maxDepth && eng.scansDone < MAX_SCANS) {
+          const picks = eng.pending
+            .filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`))
+            .sort((a, b) => PIVOT_PRIORITY[a.kind] - PIVOT_PRIORITY[b.kind])
+            .slice(0, AUTO_PER_SCAN);
+          for (const c of picks) {
+            eng.runSet.add(`${c.kind}:${c.value}`);
+            eng.queue.push({ kind: c.kind, value: c.value, depth: job.depth + 1 });
+            pushLog(
+              "sys",
+              `Rekursiya: "${c.value}" (${c.kind.toUpperCase()}) bo'yicha chuqurlik ${job.depth + 1} skaner navbatga qo'shildi`
+            );
+          }
+          setPendingCandidates(eng.pending.filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`)));
+        }
+      }
+    } finally {
+      processingRef.current = false;
+    }
+    if (engineRef.current.stopped) {
+      setStep("stopped");
+      return;
+    }
+    await finalVerdictPass();
+    setStep("done");
+    pushLog("sys", "Rekursiv chuqur qidiruv yakunlandi — AI xulosa chiqarishingiz mumkin.");
+  };
+
+  const continueAfterReview = () => {
+    const eng = engineRef.current;
+    if (eng.stopped) {
+      setStep("stopped");
+      return;
+    }
+    const picks = eng.pending
+      .filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`))
+      .sort((a, b) => PIVOT_PRIORITY[a.kind] - PIVOT_PRIORITY[b.kind])
+      .slice(0, AUTO_PER_SCAN);
+    for (const c of picks) {
+      eng.runSet.add(`${c.kind}:${c.value}`);
+      eng.queue.push({ kind: c.kind, value: c.value, depth: 1 });
+      pushLog("sys", `Navbat: "${c.value}" (${c.kind.toUpperCase()}) bo'yicha chuqur skaner`);
+    }
+    setPendingCandidates(eng.pending.filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`)));
+    if (eng.queue.length === 0) {
+      pushLog("info", "Yangi iz topilmadi — sessiya yakunlandi.");
+      setStep("done");
+      return;
+    }
+    setStep("pivots");
+    void processQueue();
+  };
+
+  // ===== Qo'lda pivot: "+" tugmasi yoki paneldagi Play =====
+  const addPivotManual = (p: { kind: TargetType; value: string }) => {
+    const eng = engineRef.current;
+    if (step === "idle") return;
+    const pk = `${p.kind}:${p.value}`;
+    if (eng.runSet.has(pk)) {
+      toast({
+        title: "Bu iz allaqachon navbatda yoki tekshirilgan",
+        description: `${p.kind.toUpperCase()}: ${p.value}`,
+      });
+      return;
+    }
+    if (eng.scansDone >= MAX_SCANS) {
+      toast({
+        title: "Skaner limitiga yetildi",
+        description: `Bitta sessiyada eng ko'pi bilan ${MAX_SCANS} ta skaner bajariladi.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    eng.runSet.add(pk);
+    eng.queue.push({ kind: p.kind, value: p.value, depth: 1 });
+    setPendingCandidates(eng.pending.filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`)));
+    pushLog("info", `Qo'lda navbat: "${p.value}" (${p.kind.toUpperCase()}) bo'yicha chuqur skaner`);
+    if (!processingRef.current) {
+      setStep("pivots");
+      void processQueue();
+    }
+  };
+
+  const stopAll = () => {
+    const eng = engineRef.current;
+    eng.stopped = true;
+    eng.queue = [];
     scanAbortRef.current?.abort();
+    setStep("stopped");
+    pushLog("warn", "Foydalanuvchi sessiyani to'xtatdi.");
+  };
+
+  // ===== Asosiy oqim =====
+  const startScan = async () => {
+    const query = input.trim();
+    if (query.length < 2) {
+      toast({
+        title: "Maqsad juda qisqa",
+        description: "Iltimos, kamida 2 belgidan iborat maqsad kiriting.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    aiAbortRef.current?.abort();
+    scanAbortRef.current?.abort();
+    processingRef.current = false;
+
+    engineRef.current = {
+      stopped: false,
+      queue: [],
+      runSet: new Set([`${type}:${query.toLowerCase()}`]),
+      pending: [],
+      knownUrls: new Set<string>(),
+      scansDone: 0,
+      rootQuery: query,
+      rootType: type,
+      maxDepth: mode === "deep" ? MAX_DEPTH_DEEP : 1,
+    };
+    resultsRef.current = new Map();
+    verdictsRef.current = {};
+    skippedRef.current = new Set();
+    statsRef.current = {};
+    touchedTabRef.current = false;
+    logIdRef.current = 0;
+
+    setVerdicts({});
+    setSkipped(new Set());
+    setReviewEntries([]);
+    setPendingCandidates([]);
+    setScansDone(0);
+    setFocusIds([]);
+    setLogs([]);
+    setModules([]);
+    setAiText("");
+    setAiStatus("idle");
+    setElapsed(0);
+    setProgress(null);
+    setTarget({ type, query });
+    saveRecent(type, query);
+    setStep("global");
+
+    pushLog(
+      "sys",
+      `SESSIYA BOSHLANDI — rejim: ${mode === "deep" ? "CHUQUR (adaptiv + rekursiv)" : "TEZ"}`
+    );
+
+    // 1-BOSQICH: dunyo bo'ylab — barcha ochiq tarmoqlar
+    const r1 = await runScanTarget({ kind: type, value: query, depth: 0 }, "core");
+    let eng = engineRef.current;
+    if (eng.stopped) {
+      setStep("stopped");
+      return;
+    }
+    harvestPivots(r1);
+
+    if (mode === "deep") {
+      // 2-BOSQICH: eng unumli manbalarga chuqur fokus
+      const top = Object.entries(statsRef.current)
+        .filter(([id, c]) => id !== "profiles" && c > 0)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([id]) => id);
+      if (top.length > 0) {
+        setFocusIds(top);
+        pushLog(
+          "sys",
+          `2-BOSQICH — ko'p natija bergan manbalar: ${top.map(moduleTitleOf).join(", ")}`
+        );
+        setStep("focused");
+        const r2 = await runScanTarget({ kind: type, value: query, depth: 0 }, "deep-only", top);
+        if (engineRef.current.stopped) {
+          setStep("stopped");
+          return;
+        }
+        harvestPivots(r2);
+      }
+
+      // 3-QADAM: AI solishtirish (review)
+      setStep("review");
+      eng = engineRef.current;
+      if (eng.stopped) {
+        setStep("stopped");
+        return;
+      }
+      const hasFlagged = await runReviewGate();
+      if (engineRef.current.stopped) {
+        setStep("stopped");
+        return;
+      }
+      if (!hasFlagged) {
+        pushLog("info", "Shubhali topilma yo'q — avtomatik davom etilmoqda...");
+        continueAfterReview();
+        return;
+      }
+      pushLog("info", "Shubhali topilmalar panelda — tekshiring yoki davom eting.");
+    } else {
+      setStep("done");
+      pushLog("sys", "Tez skaner yakunlandi — «+» orqali istalgan iz bo'yicha chuqur qidirishingiz mumkin.");
+    }
+  };
+
+  const handleCheck = (key: string) => {
+    skippedRef.current.delete(key);
+    verdictsRef.current[key] = { verdict: "related", reason: "Foydalanuvchi tekshirib tasdiqladi" };
+    setVerdicts({ ...verdictsRef.current });
+    setSkipped(new Set(skippedRef.current));
+    setReviewEntries(buildReviewEntries());
+    toast({ title: "Tasdiqlandi", description: "Natija keyingi bosqichlarda hisobga olinadi." });
+  };
+
+  const handleSkip = (key: string) => {
+    skippedRef.current.add(key);
+    verdictsRef.current[key] = { verdict: "unrelated", reason: "Foydalanuvchi o'tkazib yubordi" };
+    setVerdicts({ ...verdictsRef.current });
+    setSkipped(new Set(skippedRef.current));
+    setReviewEntries(buildReviewEntries());
+    toast({ title: "O'tkazib yuborildi", description: "Natija keyingi bosqichlardan chiqarildi." });
   };
 
   const runAi = async (question?: string) => {
@@ -384,6 +812,11 @@ export default function Home() {
 
   const totalResults = modules.reduce((acc, m) => acc + m.count, 0);
   const currentTypeLabel = TARGET_TYPES.find((t) => t.value === type)?.label ?? type;
+  const stats: SourceStat[] = modules.map((m) => ({
+    id: m.moduleId,
+    title: m.moduleTitle,
+    count: m.count,
+  }));
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -437,17 +870,17 @@ export default function Home() {
         </Alert>
 
         {/* Qidiruv formasi */}
-        <section className={phase === "idle" ? "text-center pt-6 pb-2" : ""}>
-          {phase === "idle" && (
+        <section className={step === "idle" ? "text-center pt-6 pb-2" : ""}>
+          {step === "idle" && (
             <div className="max-w-2xl mx-auto mb-6">
               <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">
                 Maqsadni kiriting — <span className="text-primary">qolganini tizim o&apos;zi bajaradi</span>
               </h1>
               <p className="mt-3 text-muted-foreground text-sm sm:text-base leading-relaxed">
-                To&apos;liq avtomatlashtirilgan ochiq manbalar razvedkasi:{" "}
-                {OSINT_MODULES.length + 1} ta modul bir vaqtda ishga tushadi —
-                ijtimoiy tarmoqlar, forumlar, hujjatlar, video, yangiliklar va
-                texnik manbalar skanerlanadi, so&apos;ng AI xulosa chiqaradi.
+                To&apos;liq avtomatlashtirilgan ochiq manbalar razvedkasi: dunyo
+                bo&apos;ylab barcha ochiq tarmoqlar skanerlanadi, eng unumli
+                manbalar chuqur tahlil qilinadi, AI natijalarni solishtiradi va
+                topilgan izlar bo&apos;yicha qidiruv o&apos;zi davom etadi.
               </p>
             </div>
           )}
@@ -473,18 +906,18 @@ export default function Home() {
               <Input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && phase !== "scanning" && startScan()}
+                onKeyDown={(e) => e.key === "Enter" && !busy && startScan()}
                 placeholder={`${currentTypeLabel} kiriting — masalan: ${
                   TARGET_TYPES.find((t) => t.value === type)?.example
                 }`}
                 className="h-11 text-base"
                 aria-label="Maqsad kiritish"
               />
-              {phase === "scanning" ? (
+              {busy ? (
                 <Button
                   size="lg"
                   variant="destructive"
-                  onClick={stopScan}
+                  onClick={stopAll}
                   className="gap-2 shrink-0"
                 >
                   <Square className="w-4 h-4" />
@@ -496,6 +929,34 @@ export default function Home() {
                   Skanerlash
                 </Button>
               )}
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2 mt-3">
+              <span className="text-[11px] text-muted-foreground mr-1 flex items-center gap-1">
+                <Network className="w-3 h-3" /> Rejim:
+              </span>
+              <button
+                onClick={() => setMode("deep")}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                  mode === "deep"
+                    ? "bg-primary/15 text-primary border-primary/40"
+                    : "bg-secondary/50 text-muted-foreground border-transparent hover:border-primary/30"
+                }`}
+                aria-pressed={mode === "deep"}
+              >
+                Chuqur + rekursiv (4 bosqich)
+              </button>
+              <button
+                onClick={() => setMode("normal")}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                  mode === "normal"
+                    ? "bg-primary/15 text-primary border-primary/40"
+                    : "bg-secondary/50 text-muted-foreground border-transparent hover:border-primary/30"
+                }`}
+                aria-pressed={mode === "normal"}
+              >
+                <Zap className="inline w-3 h-3 mr-1 -mt-0.5" />
+                Tez skaner
+              </button>
             </div>
             <div className="flex flex-wrap items-center gap-1.5 mt-3 justify-center">
               <span className="text-[11px] text-muted-foreground mr-1">
@@ -514,7 +975,7 @@ export default function Home() {
                 </button>
               ))}
             </div>
-            {recent.length > 0 && phase === "idle" && (
+            {recent.length > 0 && step === "idle" && (
               <div className="flex flex-wrap items-center gap-1.5 mt-2 justify-center">
                 <span className="text-[11px] text-muted-foreground mr-1 flex items-center gap-1">
                   <History className="w-3 h-3" /> Oldingi:
@@ -537,7 +998,7 @@ export default function Home() {
         </section>
 
         {/* Skaner maydoni */}
-        {phase !== "idle" && (
+        {step !== "idle" && (
           <section className="grid lg:grid-cols-5 gap-4 items-start">
             {/* Chap ustun */}
             <div className="lg:col-span-2 space-y-4">
@@ -547,24 +1008,34 @@ export default function Home() {
                     <Target className="w-4 h-4 text-primary" />
                     Maqsad: <span className="text-primary break-all">{target.query}</span>
                   </div>
-                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-muted-foreground items-center">
                     <span className="flex items-center gap-1">
                       <GraduationCap className="w-3.5 h-3.5" />
                       {TARGET_TYPES.find((t) => t.value === target.type)?.label}
                     </span>
                     <span className="flex items-center gap-1">
                       <Clock className="w-3.5 h-3.5" />
-                      {phase === "scanning" ? fmtElapsed(elapsed) : "yakunlangan"}
+                      {busy ? fmtElapsed(elapsed) : "yakunlangan"}
                     </span>
                     <span>
-                      {totalResults} ta topilma · {modules.length} ta modul
+                      {totalResults} ta topilma · {scansDone} ta skaner
                     </span>
+                    {STEP_BADGES[step] && (
+                      <Badge
+                        variant="secondary"
+                        className={`text-[10px] ${busy ? "bg-primary/15 text-primary border border-primary/30" : ""}`}
+                      >
+                        {STEP_BADGES[step]}
+                      </Badge>
+                    )}
                   </div>
-                  {phase === "scanning" && progress && (
+                  {busy && progress && (
                     <div className="mt-3">
                       <div className="flex justify-between text-[11px] text-muted-foreground mb-1">
-                        <span>Skaner davom etmoqda...</span>
-                        <span className="tabular-nums">
+                        <span className="truncate max-w-[200px]">
+                          Skanerlanmoqda: {activeLabel ?? target.query}
+                        </span>
+                        <span className="tabular-nums shrink-0 ml-2">
                           {progress.done}/{progress.total} so&apos;rov
                         </span>
                       </div>
@@ -577,19 +1048,40 @@ export default function Home() {
                 </Card>
               )}
 
-              <TerminalLog logs={logs} scanning={phase === "scanning"} />
+              <DeepPanel
+                mode={mode}
+                step={step}
+                stats={stats}
+                focusIds={focusIds}
+                pending={pendingCandidates}
+                activeLabel={activeLabel}
+                scansDone={scansDone}
+                busy={busy}
+                onContinue={continueAfterReview}
+                onStop={stopAll}
+                onRunPivot={addPivotManual}
+              />
+
+              <TerminalLog logs={logs} scanning={busy} />
 
               <AiPanel
                 aiText={aiText}
                 aiStatus={aiStatus}
                 onRunAnalysis={() => runAi()}
                 onAskQuestion={(q) => runAi(q)}
-                canAnalyze={phase === "done" && totalResults > 0}
+                canAnalyze={!busy && totalResults > 0}
               />
             </div>
 
             {/* O'ng ustun — natijalar */}
-            <div className="lg:col-span-3">
+            <div className="lg:col-span-3 space-y-4">
+              <ReviewPanel
+                entries={reviewEntries}
+                loading={reviewLoading}
+                onCheck={handleCheck}
+                onSkip={handleSkip}
+              />
+
               {modules.length === 0 ? (
                 <Card className="p-10 text-center">
                   <Loader2 className="w-6 h-6 animate-spin text-primary mx-auto mb-3" />
@@ -644,15 +1136,21 @@ export default function Home() {
                         </div>
                       ) : (
                         <div className="space-y-2.5">
-                          {m.results.map((r) => (
-                            <ResultCard
-                              key={r.url}
-                              item={r}
-                              saved={savedKeys.has(`${r.url}||${target?.query ?? ""}`)}
-                              onSave={saveResult}
-                              saving={false}
-                            />
-                          ))}
+                          {m.results.map((r) => {
+                            const key = normalizeUrl(r.url);
+                            return (
+                              <ResultCard
+                                key={key}
+                                item={r}
+                                saved={savedKeys.has(`${r.url}||${target?.query ?? ""}`)}
+                                onSave={saveResult}
+                                saving={false}
+                                skipped={skipped.has(key)}
+                                verdict={verdicts[key] ?? null}
+                                onPivot={addPivotManual}
+                              />
+                            );
+                          })}
                         </div>
                       )}
                     </TabsContent>

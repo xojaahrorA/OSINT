@@ -37,7 +37,12 @@ function withTimeout<T>(p: Promise<T>, ms: number, label = "query"): Promise<T> 
 }
 
 export async function POST(req: NextRequest) {
-  let body: { type?: string; query?: string };
+  let body: {
+    type?: string;
+    query?: string;
+    modules?: string[];
+    querySet?: string;
+  };
   try {
     body = await req.json();
   } catch {
@@ -46,6 +51,18 @@ export async function POST(req: NextRequest) {
 
   const targetType = (body.type ?? "") as TargetType;
   const query = (body.query ?? "").trim();
+
+  // So'rov to'plami: core — asosiy so'rovlar; deep-only — faqat chuqur
+  // kengaytirilgan so'rovlar (fokus bosqichi); extended — ikkalasi (pivot skanerlar)
+  const querySet =
+    body.querySet === "deep-only"
+      ? "deep-only"
+      : body.querySet === "extended"
+        ? "extended"
+        : "core";
+  const requestedModules = Array.isArray(body.modules)
+    ? body.modules.filter((id): id is string => typeof id === "string")
+    : null;
 
   if (!VALID_TYPES.includes(targetType) || query.length < 2) {
     return Response.json(
@@ -96,12 +113,32 @@ export async function POST(req: NextRequest) {
 
       const startedAt = Date.now();
 
-      const applicable = OSINT_MODULES.filter(
+      let applicable = OSINT_MODULES.filter(
         (m) => m.appliesTo === "all" || m.appliesTo.includes(targetType)
       );
+      if (requestedModules && requestedModules.length > 0) {
+        applicable = applicable.filter((m) => requestedModules.includes(m.id));
+      }
+      if (querySet === "deep-only") {
+        applicable = applicable.filter((m) => !!m.deepQueries);
+      }
+
+      const buildQueries = (m: (typeof OSINT_MODULES)[number]): string[] => {
+        if (querySet === "deep-only") return m.deepQueries ? m.deepQueries(query) : [];
+        if (querySet === "extended")
+          return [...m.queries(query), ...(m.deepQueries ? m.deepQueries(query) : [])];
+        return m.queries(query);
+      };
+
+      if (applicable.length === 0) {
+        send({ type: "error", message: "Tanlangan modullar bo'yicha so'rov topilmadi" });
+        close();
+        return;
+      }
+
       const moduleIds = [
         ...applicable.map((m) => m.id),
-        ...(targetType === "username" ? ["profiles"] : []),
+        ...(targetType === "username" && querySet !== "deep-only" ? ["profiles"] : []),
       ];
 
       send({
@@ -110,13 +147,14 @@ export async function POST(req: NextRequest) {
         targetType,
         modulesPlanned: moduleIds,
       });
-      log("sys", "OSINT Radar v1.0 — skaner ishga tushirildi");
+      log("sys", `OSINT Radar v2.0 — skaner ishga tushirildi (${querySet.toUpperCase()})`);
       log("info", `Maqsad turi: ${targetType.toUpperCase()} — "${query}"`);
       log(
         "sys",
         `${moduleIds.length} ta modul, ${moduleIds.reduce((acc, id) => {
+          if (id === "profiles") return acc + 1;
           const def = OSINT_MODULES.find((m) => m.id === id);
-          return acc + (def ? def.queries(query).length : 0);
+          return acc + (def ? buildQueries(def).length : 0);
         }, 0)} ta qidiruv so'rovi navbatga qo'yildi.`
       );
       log("sys", "Rejim: PASSIVE OSINT — faqat ochiq manbalar, tizimga ruxsatsiz kirish yo'q.");
@@ -141,7 +179,7 @@ export async function POST(req: NextRequest) {
         recency?: number;
       }[] = [];
       for (const m of applicable) {
-        for (const qs of m.queries(query)) {
+        for (const qs of buildQueries(m)) {
           queue.push({
             moduleId: m.id,
             moduleTitle: m.title,
@@ -209,7 +247,7 @@ export async function POST(req: NextRequest) {
       const seenUrls = new Map<string, Set<string>>();
       const doneByModule = new Map<string, { total: number; failed: number }>();
       for (const m of applicable) {
-        doneByModule.set(m.id, { total: m.queries(query).length, failed: 0 });
+        doneByModule.set(m.id, { total: buildQueries(m).length, failed: 0 });
         collector.set(m.id, []);
         seenUrls.set(m.id, new Set());
       }
@@ -262,7 +300,7 @@ export async function POST(req: NextRequest) {
       for (const m of applicable) {
         send({ type: "module_start", moduleId: m.id, moduleTitle: m.title });
       }
-      if (targetType === "username") {
+      if (targetType === "username" && querySet !== "deep-only") {
         send({
           type: "module_start",
           moduleId: "profiles",
@@ -291,7 +329,7 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      if (targetType === "username") {
+      if (targetType === "username" && querySet !== "deep-only") {
         log("info", "[Profil havolalari] 12 ta platforma uchun to'g'ridan-to'g'ri havolalar tayyorlanmoqda...");
         const links = buildProfileLinks(query);
         log("ok", `[Profil havolalari] ${links.length} ta havola tayyor`);
