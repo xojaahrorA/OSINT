@@ -63,3 +63,6 @@ worklog.md
 .zscripts/
 .agent*
 examples/
+
+# tool natijalari dump (ish jarayoni fayllari)
+/tool-results/
