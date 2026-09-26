@@ -174,6 +174,41 @@ const STOPWORDS = new Set([
   "in", "on", "for", "with", "a", "an", "to", "kim", "nima",
 ]);
 
+/**
+ * Ism-familiya iborasini aniqlash: 2-4 ta sof harfli so'z (apostrof/tire
+ * bilan — O'tkir, O'zbekiston kabi). "Muhammad Karimov" → true,
+ * "Tashkent weather 7 kun" → false.
+ */
+function isPersonPhrase(phrase: string): boolean {
+  const words = phrase.toLowerCase().split(/\s+/).filter(Boolean);
+  return (
+    words.length >= 2 &&
+    words.length <= 4 &&
+    words.every((w) => /^[a-z\u0400-\u04ff'.-]{2,}$/i.test(w))
+  );
+}
+
+/**
+ * Ism-familiya mosligi uch darajali:
+ *  - "full"    — har bir so'z aniq yoki initsial ko'rinishda bor
+ *                ("M. Karimov" — "Muhammad Karimov" uchun mos)
+ *  - "partial" — familiya aniq bor + kamida 2 ta so'z mos
+ *  - "none"    — mos emas (faqat familiya uchragan ho'kiz natijalar)
+ */
+function personMatch(hay: string, words: string[]): "full" | "partial" | "none" {
+  const checks = words.map((w) => {
+    if (hay.includes(w)) return "full" as const;
+    // Initsial: "Muhammad" → "M." (matnda qisqa yozilgan ism)
+    if (hay.includes(`${w[0]}.`)) return "initial" as const;
+    return "none" as const;
+  });
+  if (checks.every((c) => c === "full")) return "full";
+  const matched = checks.filter((c) => c !== "none").length;
+  const surnameOk = checks[checks.length - 1] === "full";
+  if (surnameOk && matched >= 2) return "partial";
+  return "none";
+}
+
 export function relevanceFilter(
   query: string,
   results: SearchResultItem[]
@@ -193,11 +228,63 @@ export function relevanceFilter(
       stems.add(t.slice(0, -3));
     }
   }
-
-  return results.filter((r) => {
+  const stemArr = [...stems];
+  const matchesAny = (r: SearchResultItem) => {
     const hay = `${r.name} ${r.snippet} ${r.url}`.toLowerCase();
-    return [...stems].some((s) => hay.includes(s));
-  });
+    return stemArr.some((s) => hay.includes(s));
+  };
+
+  // --- Ism-familiya qattiqligi (noto'g'ri shaxs natijalariga qarshi) ---
+  //
+  // Muammo: "Muhammad Karimov" qidiruvida dvigatellar faqat familiyasi
+  // mos boshqa shaxslar (Islom Karimov, Karimova...) sahifalarini ham
+  // qaytaradi. OSINT uchun boshqa shaxs natijasi xavfli.
+  //
+  // Darajalar: full (hamma so'z aniq/initsial) → partial (familiya + 2 so'z)
+  // → none (chetlanadi). Faqat familiyasi mos soxta natijalar o'tmaydi.
+  //
+  // 1-qoida: qo'shtirnoqli ibora 2-4 harfli so'zdan iborat bo'lsa
+  //    ("Muhammad Karimov").
+  const namePhrases = [...query.matchAll(/"([^"]{2,60})"/g)]
+    .map((m) => m[1])
+    .filter(isPersonPhrase);
+  if (namePhrases.length > 0) {
+    const nameWords = [
+      ...new Set(namePhrases.flatMap((p) => p.toLowerCase().split(/\s+/))),
+    ];
+    const graded = results.filter((r) => {
+      const hay = `${r.name} ${r.snippet} ${r.url}`.toLowerCase();
+      const g = personMatch(hay, nameWords);
+      return g === "full" || g === "partial";
+    });
+    return graded;
+  }
+
+  // 2-qoida: qo'shtirnoqsiz, 2-3 ta sof harfli so'z (soddalashtirilgan
+  //    ism-familiya so'rovi: "Muhammad Karimov facebook") — birinchi 2 ta
+  //    so'z (ism va familiya) majburiy, qolgani (platforma so'zi) ixtiyoriy.
+  const cleanCore = query
+    .replace(/site:\S+|filetype:\S+|inurl:\S+|intitle:\S+|\bOR\b|[()"]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const coreWords = cleanCore
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (
+    coreWords.length >= 2 &&
+    coreWords.length <= 3 &&
+    coreWords.every((w) => /^[a-z\u0400-\u04ff'.-]{2,}$/i.test(w))
+  ) {
+    const lead = coreWords.slice(0, 2);
+    return results.filter((r) => {
+      const hay = `${r.name} ${r.snippet} ${r.url}`.toLowerCase();
+      const g = personMatch(hay, lead);
+      return g === "full" || g === "partial";
+    });
+  }
+
+  return results.filter(matchesAny);
 }
 
 /** So'rovda qidiruv operatorlari bormi? */
@@ -525,8 +612,11 @@ export async function googleNewsRssSearch(
     { ua: UA_CHROME }
   );
   const items = parseRssItems(xml, num);
+  // ASL so'rov (qo'shtirnoqlar bilan) beriladi — "Ism Familiya" iborasi
+  // natija ichida majburiy bo'ladi. Aks holda faqat familiyasi mos boshqa
+  // shaxs yangiliklari (Islom Karimov kabi) ham o'tib ketadi.
   return operatorFilter(
-    query.replace(/"/g, " "),
+    query,
     items.map((it) => ({
       name: it.title || "Yangilik",
       url: it.link,
@@ -548,8 +638,10 @@ export async function bingNewsRssSearch(
     `https://www.bing.com/news/search?q=${encodeURIComponent(cleanQuery)}&format=rss`
   );
   const items = parseRssItems(xml, num);
+  // ASL so'rov (qo'shtirnoqlar bilan) beriladi — ibora filtri majburiy
+  // bo'ladi (boshqa shaxsning yangiliklari o'tib ketmasligi uchun).
   return operatorFilter(
-    query.replace(/"/g, " "),
+    query,
     items.map((it) => ({
       name: it.title || "Yangilik",
       url: it.link,
@@ -757,12 +849,15 @@ const ENGINE_TIMEOUT_MS = 6500;
 const CHAIN_BUDGET_MS = 17000;
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`timeout ${ms}ms`)), ms)
-    ),
-  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutP = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout ${ms}ms`)), ms);
+  });
+  // Timer p tugaganda bekor qilinadi — pending timer'lari Node
+  // jarayonini ushlab qolmaydi (test skriptlar darrov chiqadi)
+  return Promise.race([p, timeoutP]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 async function tryEngine(

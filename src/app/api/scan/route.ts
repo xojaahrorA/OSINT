@@ -7,7 +7,7 @@ import {
   type TargetType,
   type ScanEvent,
 } from "@/lib/osint";
-import { searchOpenWeb } from "@/lib/search-engines";
+import { searchOpenWeb, relevanceFilter } from "@/lib/search-engines";
 
 export const maxDuration = 180;
 
@@ -177,11 +177,11 @@ export async function POST(req: NextRequest) {
         } catch {
           log(
             "warn",
-            "Z.ai dvigateli mavjud emas — ochiq dvigatellar rejimi (9 ta dvigatel zanjiri)"
+            "Z.ai dvigateli mavjud emas — ochiq dvigatellar rejimi (10 ta dvigatel zanjiri)"
           );
         }
       } else {
-        log("info", "SEARCH_ENGINE=open — ochiq dvigatellar rejimi (9 ta dvigatel zanjiri)");
+        log("info", "SEARCH_ENGINE=open — ochiq dvigatellar rejimi (10 ta dvigatel zanjiri)");
       }
 
       // Global so'rov navbati
@@ -227,7 +227,7 @@ export async function POST(req: NextRequest) {
             );
             lastEngineLabel = "Z.ai";
             engineStats.set("Z.ai", (engineStats.get("Z.ai") ?? 0) + 1);
-            return (raw ?? [])
+            const mapped = (raw ?? [])
               .filter((r) => r && r.url)
               .map((r) => ({
                 name: r.name || r.host_name || queryStr,
@@ -237,6 +237,9 @@ export async function POST(req: NextRequest) {
                 date: r.date || undefined,
                 favicon: r.favicon || undefined,
               }));
+            // Ism-familiya qattiqligi Z.ai natijalariga ham qo'llanadi —
+            // boshqa shaxs (faqat familiyasi mos) natijalari chiqib ketmasligi uchun
+            return relevanceFilter(queryStr, mapped);
           } catch (e) {
             const msg = String(e);
             // 422 — dvigatel ushbu so'rov bo'yicha natija yo'q deb qaytardi: yuqoriga o'tkazamiz
@@ -244,7 +247,7 @@ export async function POST(req: NextRequest) {
             // Boshqa xatolar (auth/tarmoq/429) — ochiq dvigatellarga zaxira o'tish
             log(
               "warn",
-              "Z.ai dvigateli xato berdi — ochiq dvigatellarga o'tilmoqda (9 ta dvigatel zanjiri)..."
+              "Z.ai dvigateli xato berdi — ochiq dvigatellarga o'tilmoqda (10 ta dvigatel zanjiri)..."
             );
           }
         }
