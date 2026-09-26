@@ -17,12 +17,35 @@ import type { SearchResultItem } from "./osint";
 
 // dvigatellarni yangilaganda ham bu satr saqlansin — diagnostika kod
 // versiyasini shu belgi orqali aniqlaydi
-export const SEARCH_ENGINES_VERSION = "multi-9-engines";
+export const SEARCH_ENGINES_VERSION = "multi-10-engines";
 
 const UA_FIREFOX =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0";
 const UA_CHROME =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+/**
+ * Chrome brauzer to'liq bo'lgan sarlavhalar to'plami — Mojeek/Brave kabi
+ * qattiq bot-aniqlagichlar sarlavhalar to'liq bo'lmagan so'rovlarga 403
+ * qaytaradi. Sec-Fetch-* va sec-ch-ua sarlavhalari so'rovni haqiqiy
+ * brauzer so'roviga o'xshatadi.
+ */
+function chromeBrowserHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    Accept:
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,uz;q=0.8",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    ...extra,
+  };
+}
 
 export interface OpenSearchResult {
   results: SearchResultItem[];
@@ -320,7 +343,10 @@ export async function mojeekSearch(
 ): Promise<SearchResultItem[]> {
   const html = await fetchHtml(
     `https://www.mojeek.com/search?q=${encodeURIComponent(query)}`,
-    { ua: UA_CHROME }
+    {
+      ua: UA_CHROME,
+      headers: chromeBrowserHeaders({ Referer: "https://www.mojeek.com/" }),
+    }
   );
   const results: SearchResultItem[] = [];
   const re = /<h2[^>]*><a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a><\/h2>/g;
@@ -343,7 +369,7 @@ export async function braveSearch(
 ): Promise<SearchResultItem[]> {
   const html = await fetchHtml(
     `https://search.brave.com/search?q=${encodeURIComponent(query)}`,
-    { ua: UA_CHROME }
+    { ua: UA_CHROME, headers: chromeBrowserHeaders() }
   );
   if (/captcha|Captcha/i.test(html.slice(0, 4000)))
     throw new Error("Brave captcha");
@@ -536,11 +562,15 @@ export async function bingNewsRssSearch(
 }
 
 // ===== 9. SearXNG (ommaviy instanslar) =====
+/**
+ * Instanslar real test asosida tanlangan (2025-09): paulgo.io — server tomonda
+ * to'liq render qilinadigan yagona yirik instans (bot tekshiruvi yo'q).
+ * searx.be / inetol / priv.au endi antibot captcha qo'yadi — olib tashlangan.
+ */
 const SEARX_INSTANCES = [
-  "https://searx.be",
-  "https://search.inetol.net",
+  "https://paulgo.io",
   "https://searx.tiekoetter.com",
-  "https://searx.ninja",
+  "https://searx.be",
 ];
 
 export async function searxSearch(
@@ -549,34 +579,154 @@ export async function searxSearch(
 ): Promise<SearchResultItem[]> {
   const errors: string[] = [];
   for (const inst of SEARX_INSTANCES) {
+    // 1) Oddiy HTML sahifa (server tomonda render qilingan natijalar)
     try {
       const html = await fetchHtml(
         `${inst}/search?q=${encodeURIComponent(query)}`,
         { ua: UA_CHROME, timeoutMs: 8000, headers: { Accept: "text/html" } }
       );
-      const results: SearchResultItem[] = [];
-      const re =
-        /<article[^>]+class="[^"]*result[^"]*[\s\S]*?<h3[^>]*><a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(html)) && results.length < num) {
-        const url = decodeEntities(m[1]);
-        if (!/^https?:\/\//i.test(url)) continue;
-        results.push({
-          name: stripTags(m[2]) || hostOf(url),
-          url,
-          snippet: "",
-          host_name: hostOf(url),
-        });
-      }
+      const results = parseSearxHtml(html, num);
       if (results.length > 0) {
         return operatorFilter(query, results, true);
       }
-      errors.push(`${hostOf(inst)}: natija yo'q`);
+      // antibot captcha sahifasi aniqroq xato bo'lsin
+      if (/verifying|captcha|security check|antibot/i.test(html.slice(0, 3000)))
+        errors.push(`${hostOf(inst)}: antibot captcha`);
+      else errors.push(`${hostOf(inst)}: natija yo'q`);
     } catch (e) {
       errors.push(`${hostOf(inst)}: ${String(e).slice(0, 40)}`);
     }
+    // 2) RSS zaxira yo'li — SearXNG format=rss'ni qo'llaydi, ba'zan HTML'dan
+    //    keyin ham ishlaydi (boshqa upstream yo'li)
+    try {
+      const xml = await fetchHtml(
+        `${inst}/search?q=${encodeURIComponent(query)}&format=rss`,
+        { ua: UA_CHROME, timeoutMs: 7000, headers: { Accept: "application/rss+xml,text/xml" } }
+      );
+      const items = parseRssItems(xml, num);
+      if (items.length > 0) {
+        const mapped = items.map((it) => ({
+          name: it.title || "Natija",
+          url: it.link,
+          snippet: "",
+          host_name: hostOf(it.link),
+        }));
+        return operatorFilter(query, mapped, true);
+      }
+    } catch {
+      /* HTML xatosi yetarli tavsif beradi */
+    }
   }
   throw new Error(errors.join("; ").slice(0, 100));
+}
+
+/** SearXNG HTML'dan natijalarni ajratib olish (eski va yangi markup) */
+export function parseSearxHtml(
+  html: string,
+  num: number
+): SearchResultItem[] {
+  const results: SearchResultItem[] = [];
+
+  // Yangi markup: <article class="result ..."> ... <h3><a href="URL" ...>Sarlavha</a></h3> ... <p class="content">matn</p>
+  const articles = html.match(/<article[^>]*class="[^"]*result[^"]*"[^>]*>[\s\S]*?<\/article>/g) ?? [];
+  for (const art of articles) {
+    if (results.length >= num) break;
+    const a = art.match(/<h3[^>]*><a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
+    if (!a) continue;
+    const url = decodeEntities(a[1]);
+    if (!/^https?:\/\//i.test(url)) continue;
+    const snip = art.match(/<p class="content">([\s\S]*?)<\/p>/);
+    results.push({
+      name: stripTags(a[2]) || hostOf(url),
+      url,
+      snippet: snip ? stripTags(snip[1]).slice(0, 300) : "",
+      host_name: hostOf(url),
+    });
+  }
+
+  // Eskicha markup zaxirasi: h3 ichidagi havolalar to'g'ridan-to'g'ri
+  if (results.length === 0) {
+    const re =
+      /<h3[^>]*><a[^>]+href="(https?:\/\/([^"]+))"[^>]*>([\s\S]*?)<\/a>/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html)) && results.length < num) {
+      const url = decodeEntities(m[1]);
+      results.push({
+        name: stripTags(m[3]) || hostOf(url),
+        url,
+        snippet: "",
+        host_name: hostOf(url),
+      });
+    }
+  }
+  return results;
+}
+
+// ===== 10. Marginalia (ochiq manba qidiruv — JSON API, bot tekshiruvi yo'q) =====
+/**
+ * Qwant DataDome captcha qo'yganidan keyin shu dvigatel uning o'rnini
+ * egallaydi. api.marginalia.nu ochiq kalit bilan ishlaydi, JSON qaytaradi.
+ * Kichik/nostandart vebga ixtisoslashgan — OSINT uchun qo'shimcha qamrov.
+ * QAYD: API ba'zan sekinlashadi/osilib qoladi — shuning uchun qisqa 5s
+ * timeout qo'llanadi; osilib qolsa zanjir tezda keyingi dvigatelga o'tadi.
+ */
+export async function marginaliaSearch(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  const cleanQuery = query.replace(/"/g, " ").replace(/\s+/g, " ").trim();
+  const body = await fetchHtml(
+    `https://api.marginalia.nu/public/search/${encodeURIComponent(cleanQuery)}`,
+    {
+      ua: UA_CHROME,
+      timeoutMs: 5000,
+      headers: { Accept: "application/json" },
+    }
+  );
+  const j = JSON.parse(body) as {
+    results?: { url?: string; title?: string; description?: string }[];
+  };
+  const results: SearchResultItem[] = [];
+  for (const it of j.results ?? []) {
+    if (!it.url || results.length >= num) break;
+    if (!/^https?:\/\//i.test(it.url)) continue;
+    results.push({
+      name: it.title || hostOf(it.url),
+      url: it.url,
+      snippet: (it.description ?? "").slice(0, 300),
+      host_name: hostOf(it.url),
+    });
+  }
+  return operatorFilter(query.replace(/"/g, " "), results, true);
+}
+
+// ===== Sovitish (circuit breaker) — bloklangan dvigatellarni vaqtincha o'tkazib yuborish =====
+/**
+ * Dvigatel HTTP 403/429/503 qaytarsa — IP bloklangan/rate-limit. Shu holatda
+ * keyingi skanerlarda u dvigatelga murojaat qilmaslik kerak: har safar 6-7s
+ * timeout kutib, zanjirni sekinlashtirmaslik va blokni kuchaytirmaslik uchun.
+ * Dvigatel COOLDOWN_MINUTES davomida "dam olish" rejimida bo'ladi.
+ */
+const COOLDOWN_MINUTES = 10;
+const cooldowns = new Map<string, number>(); // dvigatel nomi → qachongacha (epoch ms)
+
+function setCooldown(name: string, minutes = COOLDOWN_MINUTES): void {
+  cooldowns.set(name, Date.now() + minutes * 60_000);
+}
+
+export function isCoolingDown(name: string): boolean {
+  const until = cooldowns.get(name);
+  if (!until) return false;
+  if (Date.now() > until) {
+    cooldowns.delete(name);
+    return false;
+  }
+  return true;
+}
+
+export function cooldownMinutesLeft(name: string): number {
+  const until = cooldowns.get(name);
+  return until ? Math.max(0, Math.ceil((until - Date.now()) / 60_000)) : 0;
 }
 
 // ===== Zanjir: barcha dvigatellar ketma-ket (juftliklar bilan parallellashgan) =====
@@ -584,15 +734,21 @@ export async function searxSearch(
 type EngineFn = (query: string, num: number) => Promise<SearchResultItem[]>;
 
 const ENGINE_CHAIN: { name: string; fn: EngineFn }[] = [
+  // 1-juftlik: tekshirilgan ishonchli dvigatellar
   { name: "DuckDuckGo", fn: ddgHtmlSearch },
   { name: "DuckDuckGo Lite", fn: ddgLiteSearch },
-  { name: "Mojeek", fn: mojeekSearch },
-  { name: "Brave", fn: braveSearch },
-  { name: "Qwant", fn: qwantSearch },
+  // 2-juftlik: Microsoft/Google yangiliklari ham barqaror
   { name: "Bing", fn: bingSearch },
   { name: "Google Yangiliklar", fn: googleNewsRssSearch },
+  // 3-juftlik: server-render SearXNG (paulgo.io) + Marginalia JSON API
   { name: "Bing Yangiliklar", fn: bingNewsRssSearch },
   { name: "SearXNG", fn: searxSearch },
+  { name: "Marginalia", fn: marginaliaSearch },
+  // 4-juftlik: qattiq bot-aniqlagichli dvigatellar — ko'pincha 403/429
+  { name: "Mojeek", fn: mojeekSearch },
+  { name: "Brave", fn: braveSearch },
+  // 5-juftlik: DataDome himoyalangan — zaxira oxirida
+  { name: "Qwant", fn: qwantSearch },
 ];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -615,6 +771,13 @@ async function tryEngine(
   num: number,
   errors: string[]
 ): Promise<SearchResultItem[] | null> {
+  // Sovitish rejimida — o'tkazib yuboramiz (timeout kutmaymiz)
+  if (isCoolingDown(e.name)) {
+    errors.push(
+      `${e.name}: o'tkazib yuborildi (sovitish ${cooldownMinutesLeft(e.name)} daqiqa qoldi)`
+    );
+    return null;
+  }
   try {
     const raw = await withTimeout(e.fn(query, num), ENGINE_TIMEOUT_MS);
     // Operator filtri dvigatel ichida, bu yerda umumiy maqbuliyat filtri:
@@ -626,18 +789,25 @@ async function tryEngine(
         : `${e.name}: 0 natija`
     );
   } catch (err) {
-    errors.push(`${e.name}: ${String(err).slice(0, 60)}`);
+    const msg = String(err);
+    // Blok/rate-limit xatosi bo'lsa — dvigatelni 10 daqiqaga sovitamiz:
+    // keyingi skanerlar u dvigatelni umuman tekshirmaydi, zanjir tezlashadi.
+    if (/HTTP (403|429|503)/.test(msg)) {
+      setCooldown(e.name);
+      errors.push(
+        `${e.name}: ${msg.slice(0, 60)} — ${COOLDOWN_MINUTES} daqiqaga o'tkazib yuboriladi`
+      );
+    } else {
+      errors.push(`${e.name}: ${msg.slice(0, 60)}`);
+    }
   }
   return null;
 }
 
-const REFORM_ENGINES = [
-  ENGINE_CHAIN[1], // DuckDuckGo Lite
-  ENGINE_CHAIN[2], // Mojeek
-  ENGINE_CHAIN[3], // Brave
-  ENGINE_CHAIN[5], // Bing
-  ENGINE_CHAIN[6], // Google Yangiliklar
-];
+/** Reformulatsiya uchun dvigatellarni nom bo'yicha olish (indeks buzuq bo'lmasin) */
+const REFORM_ENGINES = ["DuckDuckGo Lite", "Bing", "Google Yangiliklar", "Marginalia", "Mojeek"]
+  .map((name) => ENGINE_CHAIN.find((e) => e.name === name))
+  .filter((e): e is { name: string; fn: EngineFn } => Boolean(e));
 
 export async function searchOpenWeb(
   query: string,

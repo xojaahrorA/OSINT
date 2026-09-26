@@ -84,6 +84,7 @@ export interface ScanEvent {
   moduleId?: string;
   moduleTitle?: string;
   count?: number;
+  total?: number;
   results?: SearchResultItem[];
   totalResults?: number;
   elapsedMs?: number;
@@ -390,4 +391,5 @@ export const PIVOT_PRIORITY: Record<TargetType, number> = {
   phone: 2,
   domain: 3,
   ip: 4,
+  name: 5,
 };

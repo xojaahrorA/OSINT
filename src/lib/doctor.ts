@@ -11,6 +11,9 @@ import {
   googleNewsRssSearch,
   bingNewsRssSearch,
   searxSearch,
+  marginaliaSearch,
+  isCoolingDown,
+  cooldownMinutesLeft,
   SEARCH_ENGINES_VERSION,
 } from "./search-engines";
 import type { SearchResultItem } from "./osint";
@@ -38,13 +41,14 @@ type EngineFn = (query: string, num: number) => Promise<SearchResultItem[]>;
 const ENGINES: { id: string; label: string; fn: EngineFn }[] = [
   { id: "ddg", label: "DuckDuckGo", fn: ddgHtmlSearch },
   { id: "ddg-lite", label: "DuckDuckGo Lite", fn: ddgLiteSearch },
-  { id: "mojeek", label: "Mojeek", fn: mojeekSearch },
-  { id: "brave", label: "Brave", fn: braveSearch },
-  { id: "qwant", label: "Qwant", fn: qwantSearch },
   { id: "bing", label: "Bing", fn: bingSearch },
   { id: "gnews", label: "Google Yangiliklar", fn: googleNewsRssSearch },
   { id: "bnews", label: "Bing Yangiliklar", fn: bingNewsRssSearch },
   { id: "searx", label: "SearXNG", fn: searxSearch },
+  { id: "marginalia", label: "Marginalia", fn: marginaliaSearch },
+  { id: "mojeek", label: "Mojeek", fn: mojeekSearch },
+  { id: "brave", label: "Brave", fn: braveSearch },
+  { id: "qwant", label: "Qwant", fn: qwantSearch },
 ];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -97,7 +101,7 @@ export async function runDiagnostics(): Promise<DoctorReport> {
       label: "Kod versiyasi",
       status: codeVersion ? "ok" : "fail",
       detail: codeVersion
-        ? "Qidiruv dvigatellari moduli yangi versiyada (multi-9)"
+        ? `Qidiruv dvigatellari moduli yangi versiyada (${SEARCH_ENGINES_VERSION})`
         : "src/lib/search-engines.ts eskirgan — 'git pull' qilib yangilang",
     });
   } catch {
@@ -171,11 +175,16 @@ export async function runDiagnostics(): Promise<DoctorReport> {
           });
         }
       } catch (err) {
+        const msg = String(err).slice(0, 90);
+        // Sovitish rejimi haqida qo'shimcha ma'lumot
+        const cooling = isCoolingDown(e.label)
+          ? ` (skanerda ${cooldownMinutesLeft(e.label)} daqiqagacha o'tkazib yuboriladi)`
+          : "";
         checks.push({
           id: `engine-${e.id}`,
           label: e.label,
           status: "fail",
-          detail: String(err).slice(0, 90),
+          detail: `${msg}${cooling}`,
           ms: Date.now() - t0,
         });
       }

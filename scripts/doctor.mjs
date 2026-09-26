@@ -65,11 +65,36 @@ async function ddgLite(q) {
   return (h.match(/result-link/g) ?? []).length;
 }
 async function mojeek(q) {
-  const h = await fetchHtml(`https://www.mojeek.com/search?q=${encodeURIComponent(q)}`, { ua: UA_CHROME });
+  const h = await fetchHtml(`https://www.mojeek.com/search?q=${encodeURIComponent(q)}`, {
+    ua: UA_CHROME,
+    headers: {
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+      "Sec-Fetch-User": "?1",
+      "Upgrade-Insecure-Requests": "1",
+      "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"Windows"',
+      Referer: "https://www.mojeek.com/",
+    },
+  });
   return (h.match(/<h2[^>]*><a[^>]+href="https?:\/\//g) ?? []).length;
 }
 async function brave(q) {
-  const h = await fetchHtml(`https://search.brave.com/search?q=${encodeURIComponent(q)}`, { ua: UA_CHROME });
+  const h = await fetchHtml(`https://search.brave.com/search?q=${encodeURIComponent(q)}`, {
+    ua: UA_CHROME,
+    headers: {
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+      "Sec-Fetch-User": "?1",
+      "Upgrade-Insecure-Requests": "1",
+      "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"Windows"',
+    },
+  });
   if (/captcha/i.test(h.slice(0, 4000))) throw new Error("captcha");
   return (h.match(/heading-serpresult/g) ?? []).length;
 }
@@ -95,10 +120,13 @@ async function bnews(q) {
   return (h.match(/<item>/g) ?? []).length;
 }
 async function searx(q) {
-  for (const inst of ["https://searx.be", "https://search.inetol.net", "https://searx.tiekoetter.com", "https://searx.ninja"]) {
+  // paulgo.io — server tomonda to'liq render qilinadigan instans (2025-09 tekshirildi)
+  for (const inst of ["https://paulgo.io", "https://searx.tiekoetter.com", "https://searx.be"]) {
     try {
       const h = await fetchHtml(`${inst}/search?q=${encodeURIComponent(q)}`, { ua: UA_CHROME, timeoutMs: 7000 });
-      const n = (h.match(/<article[^>]+class="[^"]*result/g) ?? []).length;
+      // yangi markup: <article class="result..."> ... <h3><a href=
+      let n = (h.match(/<article[^>]*class="[^"]*result[^"]*"[^>]*>[\s\S]*?<h3[^>]*><a[^>]+href="https?:\/\//g) ?? []).length;
+      if (n === 0) n = (h.match(/<h3[^>]*><a[^>]+href="https?:\/\//g) ?? []).length; // eskicha markup
       if (n > 0) return n;
     } catch {
       /* keyingi instans */
@@ -106,17 +134,26 @@ async function searx(q) {
   }
   throw new Error("hech bir instans javob bermadi");
 }
+async function marginalia(q) {
+  const h = await fetchHtml(
+    `https://api.marginalia.nu/public/search/${encodeURIComponent(q)}`,
+    { ua: UA_CHROME, timeoutMs: 6000, headers: { Accept: "application/json" } }
+  );
+  const j = JSON.parse(h);
+  return (j?.results ?? []).filter((r) => r.url).length;
+}
 
 const ENGINES = [
   ["DuckDuckGo", ddg],
   ["DuckDuckGo Lite", ddgLite],
-  ["Mojeek", mojeek],
-  ["Brave", brave],
-  ["Qwant", qwant],
   ["Bing", bing],
   ["Google Yangiliklar", gnews],
   ["Bing Yangiliklar", bnews],
   ["SearXNG", searx],
+  ["Marginalia", marginalia],
+  ["Mojeek", mojeek],
+  ["Brave", brave],
+  ["Qwant", qwant],
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -147,14 +184,14 @@ async function main() {
   let codeOk = false;
   try {
     const src = fs.readFileSync(path.join(process.cwd(), "src", "lib", "search-engines.ts"), "utf-8");
-    codeOk = src.includes("multi-9-engines");
+    codeOk = src.includes("multi-10-engines");
   } catch {
     /* yo'q */
   }
   console.log(
     `  ${codeOk ? c.green("[OK]") : c.red("[XATO]")} Kod versiyasi: ${
       codeOk
-        ? "yangi (multi-9-engines)"
+        ? "yangi (multi-10-engines)"
         : `${c.red("eskirgan — \"git pull\" qiling!")}`
     }`
   );
