@@ -17,7 +17,7 @@ import type { SearchResultItem } from "./osint";
 
 // dvigatellarni yangilaganda ham bu satr saqlansin — diagnostika kod
 // versiyasini shu belgi orqali aniqlaydi
-export const SEARCH_ENGINES_VERSION = "multi-10-engines";
+export const SEARCH_ENGINES_VERSION = "multi-10-engines-v2";
 
 const UA_FIREFOX =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0";
@@ -821,6 +821,70 @@ export function cooldownMinutesLeft(name: string): number {
   return until ? Math.max(0, Math.ceil((until - Date.now()) / 60_000)) : 0;
 }
 
+// ===== So'rov keshi — bir xil so'rov qayta yuborilsa darrov, bloklanmay javob =====
+/**
+ * Skanerlar/pivotlar ko'pincha bir xil so'rovlarni qaytaradi. Kesh dvigatel
+ * yukini kamaytirib bloklanishning oldini oladi va takroriy so'rovlarni
+ * 0ms da bajaradi. Faqat muvaffaqiyatli natijalar keshlanadi.
+ */
+const CACHE_TTL_MS = 8 * 60_000;
+const CACHE_MAX = 300;
+interface CacheEntry {
+  results: SearchResultItem[];
+  engine: string;
+  expires: number;
+}
+const respCache = new Map<string, CacheEntry>();
+
+function cacheGet(query: string, num: number): CacheEntry | null {
+  const e = respCache.get(`${num}|${query}`);
+  if (!e) return null;
+  if (Date.now() > e.expires) {
+    respCache.delete(`${num}|${query}`);
+    return null;
+  }
+  return e;
+}
+
+function cacheSet(query: string, num: number, results: SearchResultItem[], engine: string): void {
+  if (results.length === 0) return; // bo'sh natija keshlanmaydi — yangi dvigatellar topishi mumkin
+  if (respCache.size >= CACHE_MAX) {
+    const first = respCache.keys().next().value;
+    if (first !== undefined) respCache.delete(first); // FIFO — eng eskisi chiqadi
+  }
+  respCache.set(`${num}|${query}`, { results, engine, expires: Date.now() + CACHE_TTL_MS });
+}
+
+// ===== Dvigatel bo'yicha minimal pauza — bir dvigatelga ketma-ket zarba bo'lmasin =====
+/**
+ * Google/Bing/DDG tez-tez so'rovda IP'ni bloklaydi. Shu xarita har dvigatelga
+ * qayta murojaat orasida minimal pauza ushlab turadi (parallel ishchilar
+ * o'rtasida ham umumiy) — zanjir 429'ga uchramasdan iloji boricha tez yuradi.
+ * API dvigatellarga (RSS/JSON) pauza qisqaroq, scrape qiladiganlarga uzunroq.
+ */
+const ENGINE_GAP_MS: Record<string, number> = {
+  Marginalia: 700,
+  "Google Yangiliklar": 900,
+  "Bing Yangiliklar": 900,
+  SearXNG: 1400,
+  DuckDuckGo: 1700,
+  "DuckDuckGo Lite": 1700,
+  Bing: 1700,
+  Mojeek: 1700,
+  Brave: 1700,
+  Qwant: 2000,
+};
+const DEFAULT_GAP_MS = 1700;
+const lastEngineReq = new Map<string, number>();
+
+async function paceEngine(name: string): Promise<void> {
+  const gap = ENGINE_GAP_MS[name] ?? DEFAULT_GAP_MS;
+  const last = lastEngineReq.get(name) ?? 0;
+  const wait = last + gap - Date.now();
+  if (wait > 0) await sleep(Math.min(wait, 3200));
+  lastEngineReq.set(name, Date.now());
+}
+
 // ===== Zanjir: barcha dvigatellar ketma-ket (juftliklar bilan parallellashgan) =====
 
 type EngineFn = (query: string, num: number) => Promise<SearchResultItem[]>;
@@ -873,6 +937,8 @@ async function tryEngine(
     );
     return null;
   }
+  // Har dvigatelga minimal pauza — bloklanishning oldini oladi
+  await paceEngine(e.name);
   try {
     const raw = await withTimeout(e.fn(query, num), ENGINE_TIMEOUT_MS);
     // Operator filtri dvigatel ichida, bu yerda umumiy maqbuliyat filtri:
@@ -904,22 +970,43 @@ const REFORM_ENGINES = ["DuckDuckGo Lite", "Bing", "Google Yangiliklar", "Margin
   .map((name) => ENGINE_CHAIN.find((e) => e.name === name))
   .filter((e): e is { name: string; fn: EngineFn } => Boolean(e));
 
+/** Rotatsiya ko'rsatkichi — har chaqiriqda zanjir boshlanish nuqtasi siljiydi,
+ *  yuk va bloklanish xavfi barcha dvigatellarga tekis taqsimlanadi */
+let rrPointer = 0;
+
 export async function searchOpenWeb(
   query: string,
   num: number
 ): Promise<OpenSearchResult> {
+  // 0) Kesh — bir xil so'rov 8 daqiqa ichida qayta so'ralgan bo'lsa darrov javob
+  const cached = cacheGet(query, num);
+  if (cached) {
+    return { results: cached.results, engine: `${cached.engine} (kesh)`, errors: [] };
+  }
+
   const errors: string[] = [];
   const deadline = Date.now() + CHAIN_BUDGET_MS;
+  const pairCount = Math.floor(ENGINE_CHAIN.length / 2);
+  const startPair = rrPointer++ % pairCount;
 
-  // Juftliklar bilan yurish — har juftlik parallellashadi (tezlik uchun)
-  for (let i = 0; i < ENGINE_CHAIN.length; i += 2) {
+  const success = (engine: string, results: SearchResultItem[]): OpenSearchResult => {
+    cacheSet(query, num, results, engine);
+    return { results, engine, errors };
+  };
+
+  // Juftliklar bilan yurish — har juftlik parallellashadi (tezlik uchun).
+  // Boshlanish nuqtasi har chaqiriqda rotatsiya qilinadi: birinchi so'rov DDG'dan,
+  // keyingisi Bing'dan, so'ng GNews'dan boshlanadi... — bir dvigatelga ortiqcha
+  // yuk tushmaydi va bloklanish kamayadi.
+  for (let k = 0; k < pairCount; k++) {
+    const i = ((startPair + k) % pairCount) * 2;
     if (Date.now() > deadline) break;
     const pair = ENGINE_CHAIN.slice(i, i + 2);
     const settled = await Promise.all(
       pair.map(async (e) => ({ e, res: await tryEngine(e, query, num, errors) }))
     );
     for (const s of settled) {
-      if (s.res) return { results: s.res, engine: s.e.name, errors };
+      if (s.res) return success(s.e.name, s.res);
     }
   }
 
@@ -931,13 +1018,16 @@ export async function searchOpenWeb(
       for (const e of REFORM_ENGINES) {
         if (Date.now() > deadline) break;
         const r = await tryEngine(e, simplified, num, errors);
-        if (r)
+        if (r) {
+          // Reformulatsiya natijasi ham ASL so'rov kalitida keshlanadi
+          cacheSet(query, num, r, `${e.name}*`);
           return {
             results: r,
             engine: `${e.name}*`,
             errors,
             reformulated: true,
           };
+        }
       }
     }
   }

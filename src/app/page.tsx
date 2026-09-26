@@ -29,6 +29,9 @@ import {
   MailCheck,
   Building2,
   Github,
+  UserCheck,
+  Phone,
+  BookOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -88,6 +91,10 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   mailbox: MailCheck,
   "corp-domain": Building2,
   "github-email": Github,
+  // Username / Telefon / Ism — to'g'ridan-to'g'ri manbalar
+  "username-probe": UserCheck,
+  "phone-meta": Phone,
+  "wiki-people": BookOpen,
 };
 
 const EXAMPLES: { type: TargetType; query: string }[] = [

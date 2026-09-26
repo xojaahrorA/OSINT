@@ -8,6 +8,7 @@
 // Har bir manba SearchResultItem[] qaytaradi — skaner oqimiga mos keladi.
 
 import { createHash } from "node:crypto";
+import { parsePhoneNumberFromString } from "libphonenumber-js/max";
 import type { SearchResultItem, TargetType } from "@/lib/osint";
 import { FREEMAIL_DOMAINS, PLATFORM_DOMAINS } from "@/lib/osint";
 
@@ -1003,6 +1004,291 @@ async function githubSource(rawTarget: string): Promise<SearchResultItem[]> {
   ];
 }
 
+// ===== Status-bilgan fetch (profil tekshiruvi uchun) =====
+/** 404 va tarmoq xatosini ajratadi: null = javob yo'q (noma'lum), status = HTTP kod */
+async function fstatus(
+  url: string,
+  ms = 7000,
+  maxBytes = 150_000
+): Promise<{ status: number; text: string } | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": UA, Accept: "text/html,application/json,*/*" },
+      signal: timeout(ms),
+      redirect: "follow",
+    });
+    const buf = await res.arrayBuffer();
+    const dec = new TextDecoder("utf-8", { fatal: false });
+    return { status: res.status, text: dec.decode(buf.slice(0, maxBytes)) };
+  } catch {
+    return null;
+  }
+}
+
+function ogMeta(html: string, prop: string): string {
+  return decodeHtml(
+    (html.match(new RegExp(`property=["']${prop}["'][^>]*content=["']([^"']*)`)) ??
+      html.match(new RegExp(`content=["']([^"']*)["'][^>]*property=["']${prop}["']`)) ??
+      [])[1] ?? ""
+  ).trim();
+}
+
+// ===== Username: platforma profil tekshiruvi =====
+
+interface ProbeResult {
+  platform: string;
+  host: string;
+  url: string;
+  state: "found" | "missing" | "unknown";
+  info: string;
+}
+
+async function probeTelegram(u: string): Promise<ProbeResult> {
+  const url = `https://t.me/${encodeURIComponent(u)}`;
+  const r = await fstatus(url, 7000);
+  if (!r) return { platform: "Telegram", host: "t.me", url, state: "unknown", info: "javob yo'q" };
+  if (!r.text.includes("tgme_page_title"))
+    return { platform: "Telegram", host: "t.me", url, state: "missing", info: "profil/kanal topilmadi" };
+  const title = ogMeta(r.text, "og:title");
+  const desc = ogMeta(r.text, "og:description");
+  const extra = (r.text.match(/tgme_page_extra[^>]*>([^<]*)/)?.[1] ?? "").trim();
+  return {
+    platform: "Telegram", host: "t.me", url, state: "found",
+    info: [title, extra, desc.slice(0, 100)].filter(Boolean).join(" | "),
+  };
+}
+
+async function probeSteam(u: string): Promise<ProbeResult> {
+  const url = `https://steamcommunity.com/id/${encodeURIComponent(u)}`;
+  const r = await fstatus(url, 7000);
+  if (!r) return { platform: "Steam", host: "steamcommunity.com", url, state: "unknown", info: "javob yo'q" };
+  const title = (r.text.match(/<title>Steam Community :: ([^<]+)<\/title>/)?.[1] ?? "").trim();
+  if (r.status === 404 || !title || /error/i.test(title))
+    return { platform: "Steam", host: "steamcommunity.com", url, state: "missing", info: "profil topilmadi" };
+  return { platform: "Steam", host: "steamcommunity.com", url, state: "found", info: decodeHtml(title) };
+}
+
+async function probeKeybase(u: string): Promise<ProbeResult> {
+  const url = `https://keybase.io/${encodeURIComponent(u)}`;
+  const r = await fstatus(url, 7000);
+  if (!r) return { platform: "Keybase", host: "keybase.io", url, state: "unknown", info: "javob yo'q" };
+  if (r.status === 404)
+    return { platform: "Keybase", host: "keybase.io", url, state: "missing", info: "profil topilmadi" };
+  const desc = ogMeta(r.text, "og:description");
+  return { platform: "Keybase", host: "keybase.io", url, state: "found", info: desc.slice(0, 120) || "Keybase profili" };
+}
+
+async function probeGitlab(u: string): Promise<ProbeResult> {
+  const url = `https://gitlab.com/${encodeURIComponent(u)}`;
+  const rows = await fj<{ username?: string; name?: string; state?: string; avatar_url?: string }[]>(
+    `https://gitlab.com/api/v4/users?username=${encodeURIComponent(u)}`,
+    7000
+  );
+  if (rows === null)
+    return { platform: "GitLab", host: "gitlab.com", url, state: "unknown", info: "javob yo'q" };
+  if (!Array.isArray(rows) || rows.length === 0)
+    return { platform: "GitLab", host: "gitlab.com", url, state: "missing", info: "profil topilmadi" };
+  const p = rows[0];
+  return {
+    platform: "GitLab", host: "gitlab.com", url, state: "found",
+    info: [p.name, p.state ? `holat: ${p.state}` : ""].filter(Boolean).join(" | "),
+  };
+}
+
+async function probeGithub(u: string): Promise<ProbeResult> {
+  const url = `https://github.com/${encodeURIComponent(u)}`;
+  const r = await fstatus(`https://api.github.com/users/${encodeURIComponent(u)}`, 7000, 40_000);
+  if (!r) return { platform: "GitHub", host: "github.com", url, state: "unknown", info: "javob yo'q" };
+  if (r.status === 404)
+    return { platform: "GitHub", host: "github.com", url, state: "missing", info: "profil topilmadi" };
+  if (r.status !== 200)
+    return { platform: "GitHub", host: "github.com", url, state: "unknown", info: `rate-limit (${r.status})` };
+  try {
+    const j = JSON.parse(r.text) as { name?: string; bio?: string; followers?: number; public_repos?: number };
+    return {
+      platform: "GitHub", host: "github.com", url, state: "found",
+      info: [j.name, j.bio ? `bio: ${j.bio.slice(0, 80)}` : "", j.followers !== undefined ? `${j.followers} obunachi, ${j.public_repos ?? 0} repo` : ""]
+        .filter(Boolean)
+        .join(" | "),
+    };
+  } catch {
+    return { platform: "GitHub", host: "github.com", url, state: "found", info: "profil mavjud" };
+  }
+}
+
+async function probeVk(u: string): Promise<ProbeResult> {
+  const url = `https://vk.com/${encodeURIComponent(u)}`;
+  const r = await fstatus(url, 7000, 60_000);
+  if (!r) return { platform: "VK", host: "vk.com", url, state: "unknown", info: "javob yo'q" };
+  if (r.status === 404)
+    return { platform: "VK", host: "vk.com", url, state: "missing", info: "sahifa o'chirilgan yoki yo'q" };
+  const title = (r.text.match(/<title>([^<]+)<\/title>/)?.[1] ?? "").trim();
+  return { platform: "VK", host: "vk.com", url, state: "found", info: decodeHtml(title).slice(0, 100) };
+}
+
+async function probeGravatar(u: string): Promise<ProbeResult> {
+  const url = `https://gravatar.com/${encodeURIComponent(u)}`;
+  const md5 = createHash("md5").update(u.toLowerCase().trim()).digest("hex");
+  const r = await fstatus(`https://en.gravatar.com/${md5}.json`, 7000, 30_000);
+  if (!r) return { platform: "Gravatar", host: "gravatar.com", url, state: "unknown", info: "javob yo'q" };
+  if (r.status === 404)
+    return { platform: "Gravatar", host: "gravatar.com", url, state: "missing", info: "profil topilmadi" };
+  try {
+    const j = JSON.parse(r.text) as { entry?: { displayName?: string }[] };
+    const e = j?.entry?.[0];
+    if (!e) return { platform: "Gravatar", host: "gravatar.com", url, state: "missing", info: "profil topilmadi" };
+    return { platform: "Gravatar", host: "gravatar.com", url, state: "found", info: e.displayName ?? "profil mavjud" };
+  } catch {
+    return { platform: "Gravatar", host: "gravatar.com", url, state: "unknown", info: "javobni o'qib bo'lmadi" };
+  }
+}
+
+async function usernameProbeSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const u = rawTarget.trim().replace(/^@/, "").toLowerCase();
+  if (!/^[a-z0-9._-]{2,64}$/.test(u)) return [];
+  const probes = [
+    probeTelegram(u), probeSteam(u), probeKeybase(u), probeGitlab(u),
+    probeGithub(u), probeVk(u), probeGravatar(u),
+  ];
+  const settled = await Promise.allSettled(probes);
+  const results = settled
+    .map((s) => (s.status === "fulfilled" ? s.value : null))
+    .filter((x): x is ProbeResult => x !== null);
+  const found = results.filter((r) => r.state === "found");
+  const missing = results.filter((r) => r.state === "missing");
+  const unknown = results.filter((r) => r.state === "unknown");
+  const out: SearchResultItem[] = found.map((r) =>
+    item(`${r.platform}: mavjud`, r.url, r.info || "Profil ochiq manbada topildi", r.host)
+  );
+  out.push(
+    item(
+      `Profil tekshiruvi: ${found.length}/${results.length} ta platformada topildi`,
+      `https://whatsmyname.app/?q=${encodeURIComponent(u)}`,
+      [
+        found.length ? `Mavjud: ${found.map((r) => r.platform).join(", ")}` : "",
+        missing.length ? `Yo'q: ${missing.map((r) => r.platform).join(", ")}` : "",
+        unknown.length ? `Aniqlanmadi: ${unknown.map((r) => `${r.platform} (${r.info})`).join(", ")}` : "",
+        "Qolgan 600+ saytni whatsmyname.app bilan tekshirish mumkin",
+      ]
+        .filter(Boolean)
+        .join(" | "),
+      "whatsmyname.app"
+    )
+  );
+  return out;
+}
+
+// ===== Telefon: razvedka (libphonenumber — offline, bloklanmaydi) =====
+
+const UZ_OPERATORS: [string, string][] = [
+  ["20", "Humans"], ["33", "Beeline"], ["88", "Humans / Uztelecom"],
+  ["90", "Ucell"], ["91", "Ucell"], ["93", "Mobiuz"], ["94", "Mobiuz"],
+  ["95", "Mobiuz / Uzmobile"], ["97", "Uzmobile (Uztelecom)"], ["99", "Uzmobile (Uztelecom)"],
+];
+
+const PHONE_TYPE_UZ: Record<string, string> = {
+  MOBILE: "mobil telefon",
+  FIXED_LINE: "qotirilgan liniya",
+  FIXED_LINE_OR_MOBILE: "mobil/qotirilgan liniya",
+  TOLL_FREE: "bepul raqam (8-800)",
+  PREMIUM_RATE: "pullik premium raqam",
+  VOIP: "VoIP (internet-telefoniya)",
+  PERSONAL: "shaxsiy raqam",
+  PAGER: "peyjer",
+  UAN: "universal raqam",
+  SHARED_COST: "bo'linadigan to'lov",
+  VOICEMAIL: "ovozli pochta",
+};
+
+async function phoneMetaSource(rawTarget: string): Promise<SearchResultItem[]> {
+  let input = rawTarget.replace(/[\s().-]/g, "").trim();
+  if (!input.startsWith("+")) input = `+${input.replace(/^8(?=9\d{9}$)/, "7")}`; // 8...RU format → +7
+  const p = parsePhoneNumberFromString(input);
+  if (!p || !p.isValid()) {
+    return [
+      item(
+        "Raqam haqiqiy emas",
+        "https://libphonenumber.appspot.com/phonenumberparser?number=" + encodeURIComponent(rawTarget),
+        `"${rawTarget}" xalqaro formatga mos kelmadi — mamlakat kodi bilan kiriting (masalan +998901234567).`,
+        "libphonenumber"
+      ),
+    ];
+  }
+  const typeUz = p.getType() ? (PHONE_TYPE_UZ[p.getType() ?? ""] ?? p.getType()) : "aniqlanmadi";
+  const facts = [
+    `Mamlakat: ${p.country ?? "?"} (+${p.countryCallingCode})`,
+    `Tur: ${typeUz}`,
+    `Xalqaro: ${p.formatInternational()}`,
+    `Milliy: ${p.formatNational()}`,
+    `E.164: ${p.number}`,
+  ];
+  if (p.country === "UZ") {
+    const pref = p.nationalNumber.slice(0, 2);
+    const op = UZ_OPERATORS.find(([c]) => c === pref)?.[1];
+    if (op) facts.push(`Operator kodi ${pref}: ${op} (portatsiya mumkin)`);
+  }
+  return [
+    item(
+      `Telefon razvedka: ${p.country ?? "?"} — ${typeUz}`,
+      `https://www.sync.me/search/?number=${encodeURIComponent(p.number)}`,
+      `${facts.join(" | ")} | Raqam format bo'yicha haqiqiy — egasi haqida sync.me va qidiruv tizimlarida tekshiring.`,
+      "sync.me"
+    ),
+  ];
+}
+
+// ===== Ism-familiya: DuckDuckGo Knowledge Graph (Vikipediya asosidagi ma'lumotnoma) =====
+/**
+ * QAYD: Wikimedia API'ları (wikipedia/wikidata) server TLS barmoq iziga qarab
+ * 403 qaytaradi (curl o'tadi, Node fetch o'tmaydi) — shuning uchun shaxs
+ * ma'lumotnomasi DDG rasmiy Instant Answer API'si orqali olinadi: u Vikipediya
+ * abstract/infobox ma'lumotlarini bepul, kalitsiz qaytaradi.
+ */
+
+interface DdgIaResp {
+  Heading?: string;
+  Abstract?: string;
+  AbstractURL?: string;
+  AbstractSource?: string;
+  Infobox?: { content?: { label?: string; value?: string }[] };
+  Answer?: string;
+  Definition?: string;
+  DefinitionURL?: string;
+}
+
+async function wikiPeopleSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const q = rawTarget.trim().slice(0, 80);
+  if (q.length < 3) return [];
+  const r = await fj<DdgIaResp>(
+    `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&skip_disambig=1`,
+    8000
+  );
+  if (!r) return [];
+  const out: SearchResultItem[] = [];
+  if (r.Heading && (r.Abstract || r.Definition)) {
+    const infoboxFacts = (r.Infobox?.content ?? [])
+      .filter((c) => c.label && c.value)
+      .slice(0, 6)
+      .map((c) => `${c.label}: ${c.value}`);
+    const abstract = (r.Abstract || r.Definition || "").slice(0, 280);
+    out.push(
+      item(
+        `Ma'lumotnoma: ${r.Heading}`,
+        r.AbstractURL || r.DefinitionURL || `https://duckduckgo.com/?q=${encodeURIComponent(q)}`,
+        [
+          abstract,
+          infoboxFacts.length ? infoboxFacts.join(" | ") : "",
+          r.AbstractSource ? `Manba: ${r.AbstractSource}` : "",
+        ]
+          .filter(Boolean)
+          .join(" — "),
+        "duckduckgo.com"
+      )
+    );
+  }
+  return out;
+}
+
 // ===== Manbalar ro'yxati =====
 
 export interface DirectSourceDef {
@@ -1027,6 +1313,10 @@ export const DIRECT_RUNS: Record<string, (target: string) => Promise<SearchResul
   mailbox: mailboxSource,
   "corp-domain": corpDomainSource,
   "github-email": githubSource,
+  // Username / Telefon / Ism
+  "username-probe": usernameProbeSource,
+  "phone-meta": phoneMetaSource,
+  "wiki-people": wikiPeopleSource,
 };
 
 export function directSourceIdsFor(type: TargetType): string[] {
@@ -1036,5 +1326,11 @@ export function directSourceIdsFor(type: TargetType): string[] {
       ? ["ip-intel", "whois-ip", "ptr-recon"]
       : type === "email"
         ? ["breaches", "gravatar", "mailbox", "corp-domain", "github-email"]
-        : [];
+        : type === "username"
+          ? ["username-probe"]
+          : type === "phone"
+            ? ["phone-meta"]
+            : type === "name"
+              ? ["wiki-people"]
+              : [];
 }

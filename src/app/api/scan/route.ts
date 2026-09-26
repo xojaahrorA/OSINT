@@ -19,9 +19,10 @@ const VALID_TYPES: TargetType[] = ["username", "email", "phone", "name", "domain
 // (429 Too Many Requests) chekloviga tushmaslik uchun.
 const CONCURRENCY = 2;
 const STAGGER_MS = 400;
-// Ochiq dvigatellar (DuckDuckGo/Bing) scraping'da og'irroq cheklovlar qo'yadi —
-// ulardan foydalanilganda ketma-ket va sekinroq so'rov yuboriladi.
-const OPEN_STAGGER_MS = 2200;
+// Ochiq dvigatel zanjiri: pauzalar har dvigatel bo'yicha paceEngine() bilan
+// nazorat qilinadi va zanjir boshlanishi rotatsiya qilinadi — shuning uchun
+// umumiy pauza qisqargan sari skaner tezroq yuradi, bloklanish ortmaydi.
+const OPEN_STAGGER_MS = 1200;
 const OPEN_CONCURRENCY = 1;
 const QUERY_TIMEOUT_MS = 25000;
 const RETRY_DELAYS_MS = [1500, 3500, 7000];

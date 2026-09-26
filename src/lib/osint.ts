@@ -142,6 +142,28 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
     description: "Bu email bilan yozilgan ommaviy commitlar — haqiqiy ism va username aniqlanadi",
     appliesTo: ["email"],
   },
+  // ---- Username / Telefon / Ism: OSINT Framework bepul manbalari ----
+  {
+    id: "username-probe",
+    title: "Profil tekshiruvi",
+    icon: "UserCheck",
+    description: "Telegram, GitHub, GitLab, Steam, Keybase, VK, Gravatar'da profil bor-yo'qligi, ism va bio'si",
+    appliesTo: ["username"],
+  },
+  {
+    id: "phone-meta",
+    title: "Telefon razvedkasi",
+    icon: "Phone",
+    description: "Mamlakat, operator (UZ kodi), liniya turi va formatlar — libphonenumber bazasi",
+    appliesTo: ["phone"],
+  },
+  {
+    id: "wiki-people",
+    title: "Shaxs ma'lumotnomasi",
+    icon: "BookOpen",
+    description: "Mashhur shaxslar haqida ma'lumotnoma — bio, kasb, sanalar (DuckDuckGo Knowledge Graph)",
+    appliesTo: ["name"],
+  },
 ];
 
 export interface OsintModuleDef {
