@@ -35,6 +35,79 @@ export interface ModuleResult {
   results: SearchResultItem[];
 }
 
+/** To'g'ridan-to'g'ri ma'lumot manbasi metadata'si (OSINT Framework uslubi) */
+export interface DirectModuleMeta {
+  id: string;
+  title: string;
+  icon: string;
+  description: string;
+  appliesTo: TargetType[];
+}
+
+/**
+ * Domen/IP uchun to'g'ridan-to'g'ri API manbalari — qidiruv tizimlari o'rniga
+ * real ma'lumot bazalariga ulanadi (DNS, WHOIS, sertifikatlar, Shodan va h.k).
+ * Run funksiyalari src/lib/osint-sources.ts da (server-side).
+ */
+export const DIRECT_MODULE_META: DirectModuleMeta[] = [
+  {
+    id: "dns",
+    title: "DNS yozuvlari",
+    icon: "Network",
+    description: "A, AAAA, MX, NS, TXT, SOA, CAA yozuvlari — DNS-over-HTTPS orqali",
+    appliesTo: ["domain"],
+  },
+  {
+    id: "whois",
+    title: "Domen ro'yxati (RDAP)",
+    icon: "Activity",
+    description: "Registrator, ro'yxatga olish sanasi, muddat, holat va nameserverlar",
+    appliesTo: ["domain"],
+  },
+  {
+    id: "subdomains",
+    title: "Subdomenlar",
+    icon: "Layers",
+    description: "crt.sh sertifikat shaffofligi va Wayback Machine arxivi orqali",
+    appliesTo: ["domain"],
+  },
+  {
+    id: "site-probe",
+    title: "Sayt tahlili",
+    icon: "Radar",
+    description: "Sarlavha, texnologiyalar, xavfsizlik sarlavhalari, email va tarmoqlar, robots.txt",
+    appliesTo: ["domain"],
+  },
+  {
+    id: "recon",
+    title: "Tashqi rekon",
+    icon: "Crosshair",
+    description: "urlscan.io skanerlari va bir serverdagi qo'shni domenlar",
+    appliesTo: ["domain"],
+  },
+  {
+    id: "ip-intel",
+    title: "IP razvedka",
+    icon: "Zap",
+    description: "Geolokatsiya, ISP/ASN, ochiq portlar va zaifliklar (Shodan InternetDB)",
+    appliesTo: ["ip"],
+  },
+  {
+    id: "whois-ip",
+    title: "Tarmoq egasi (RDAP)",
+    icon: "Activity",
+    description: "IP blok egasi, tarmoq nomi, diapazon va abuse kontakti",
+    appliesTo: ["ip"],
+  },
+  {
+    id: "ptr-recon",
+    title: "PTR va qo'shnilar",
+    icon: "Server",
+    description: "Reverse DNS (PTR) va shu IP'da joylashgan boshqa domenlar",
+    appliesTo: ["ip"],
+  },
+];
+
 export interface OsintModuleDef {
   id: string;
   title: string;
@@ -231,7 +304,20 @@ export function buildProfileLinks(username: string): SearchResultItem[] {
 }
 
 export function getModuleIcon(moduleId: string): string {
-  return OSINT_MODULES.find((m) => m.id === moduleId)?.icon ?? "Globe";
+  return (
+    OSINT_MODULES.find((m) => m.id === moduleId)?.icon ??
+    DIRECT_MODULE_META.find((m) => m.id === moduleId)?.icon ??
+    "Globe"
+  );
+}
+
+/** Har qanday modul (qidiruv yoki to'g'ridan-to'g'ri manba) sarlavhasi */
+export function anyModuleTitle(moduleId: string): string {
+  return (
+    OSINT_MODULES.find((m) => m.id === moduleId)?.title ??
+    DIRECT_MODULE_META.find((m) => m.id === moduleId)?.title ??
+    moduleId
+  );
 }
 
 // ===== Adaptiv chuqur taramok yordamchilari =====

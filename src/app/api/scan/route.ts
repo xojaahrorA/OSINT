@@ -2,12 +2,14 @@ import { NextRequest } from "next/server";
 import ZAI from "z-ai-web-dev-sdk";
 import {
   OSINT_MODULES,
+  DIRECT_MODULE_META,
   buildProfileLinks,
   type SearchResultItem,
   type TargetType,
   type ScanEvent,
 } from "@/lib/osint";
 import { searchOpenWeb, relevanceFilter } from "@/lib/search-engines";
+import { DIRECT_RUNS, cleanDomain } from "@/lib/osint-sources";
 
 export const maxDuration = 180;
 
@@ -33,12 +35,13 @@ function nowTime(): string {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function withTimeout<T>(p: Promise<T>, ms: number, label = "query"): Promise<T> {
+  let t: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
     p,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} timeout (${ms}ms)`)), ms)
-    ),
-  ]);
+    new Promise<T>((_, reject) => {
+      t = setTimeout(() => reject(new Error(`${label} timeout (${ms}ms)`)), ms);
+    }),
+  ]).finally(() => clearTimeout(t));
 }
 
 export async function POST(req: NextRequest) {
@@ -136,13 +139,27 @@ export async function POST(req: NextRequest) {
         return m.queries(query);
       };
 
-      if (applicable.length === 0) {
+      // To'g'ridan-to'g'ri manbalar (OSINT Framework uslubi): DNS, RDAP/WHOIS,
+      // crt.sh, Wayback, urlscan.io, Shodan InternetDB — faqat domen/IP uchun.
+      // Qidiruv dvigatellari bu ma'lumotlarni indekslamaydi — shuning uchun
+      // real API'larga to'g'ridan-to'g'ri ulanamiz.
+      const directPlanned =
+        querySet !== "deep-only"
+          ? DIRECT_MODULE_META.filter(
+              (m) =>
+                m.appliesTo.includes(targetType) &&
+                (!requestedModules || requestedModules.length === 0 || requestedModules.includes(m.id))
+            )
+          : [];
+
+      if (applicable.length === 0 && directPlanned.length === 0) {
         send({ type: "error", message: "Tanlangan modullar bo'yicha so'rov topilmadi" });
         close();
         return;
       }
 
       const moduleIds = [
+        ...directPlanned.map((m) => m.id),
         ...applicable.map((m) => m.id),
         ...(targetType === "username" && querySet !== "deep-only" ? ["profiles"] : []),
       ];
@@ -164,6 +181,12 @@ export async function POST(req: NextRequest) {
         }, 0)} ta qidiruv so'rovi navbatga qo'yildi.`
       );
       log("sys", "Rejim: PASSIVE OSINT — faqat ochiq manbalar, tizimga ruxsatsiz kirish yo'q.");
+      if (directPlanned.length > 0) {
+        log(
+          "sys",
+          `${directPlanned.length} ta to'g'ridan-to'g'ri manba ulanadi: ${directPlanned.map((m) => m.title).join(", ")}`
+        );
+      }
 
       // Z.ai SDK faqat Z.ai muhitida ishlaydi — lokal mashinalarda mavjud emas.
       // Bo'lmasa skaner to'xtamaydi: ochiq dvigatellarga (DuckDuckGo/Bing) o'tadi.
@@ -314,6 +337,50 @@ export async function POST(req: NextRequest) {
 
       let cursor = 0;
       let processed = 0;
+      const TOTAL_ALL = queue.length + directPlanned.length;
+
+      // ===== To'g'ridan-to'g'ri manbalar — hammasi parallel, 5-15s ichida =====
+      const directResults = new Map<string, SearchResultItem[]>();
+      const runDirect = async () => {
+        if (directPlanned.length === 0) return;
+        const directTarget = targetType === "domain" ? cleanDomain(query) : query;
+        await Promise.allSettled(
+          directPlanned.map(async (meta) => {
+            let items: SearchResultItem[] = [];
+            try {
+              const run = DIRECT_RUNS[meta.id];
+              if (run) {
+                items = (await withTimeout(
+                  Promise.resolve(run(directTarget)),
+                  16000,
+                  meta.id
+                )) as SearchResultItem[];
+              }
+            } catch (e) {
+              log("warn", `[${meta.title}] Manba javob bermadi: ${String(e).slice(0, 60)}`);
+            }
+            directResults.set(meta.id, items);
+            if (items.length > 0) {
+              log(
+                "ok",
+                `[${meta.title}] ✓ ${items.length} ta aniq ma'lumot topildi (to'g'ridan-to'g'ri manba)`
+              );
+            } else {
+              log("info", `[${meta.title}] Bu manbada ma'lumot yo'q`);
+            }
+            processed++;
+            send({ type: "progress", count: processed, total: TOTAL_ALL });
+            send({
+              type: "module_done",
+              moduleId: meta.id,
+              moduleTitle: meta.title,
+              count: items.length,
+              results: items,
+            });
+          })
+        );
+      };
+
       const runNext = async () => {
         while (cursor < queue.length && !closed && !req.signal.aborted) {
           const job = queue[cursor++];
@@ -351,12 +418,15 @@ export async function POST(req: NextRequest) {
             }
           }
           processed++;
-          send({ type: "progress", count: processed, total: queue.length });
+          send({ type: "progress", count: processed, total: TOTAL_ALL });
           await sleep(zai ? STAGGER_MS : OPEN_STAGGER_MS);
         }
       };
 
-      // module_start hodisalari — barchasi "running" holatda
+      // module_start hodisalari — barchasi "running" holatda (to'g'ridan-to'g'ri manbalar birinchi)
+      for (const m of directPlanned) {
+        send({ type: "module_start", moduleId: m.id, moduleTitle: m.title });
+      }
       for (const m of applicable) {
         send({ type: "module_start", moduleId: m.id, moduleTitle: m.title });
       }
@@ -368,12 +438,16 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      await Promise.all(
-        Array.from(
-          { length: Math.min(zai ? CONCURRENCY : OPEN_CONCURRENCY, queue.length || 1) },
-          () => runNext()
-        )
-      );
+      // To'g'ridan-to'g'ri manbalar va qidiruv zanjiri parallel ishlaydi
+      await Promise.all([
+        runDirect(),
+        Promise.all(
+          Array.from(
+            { length: Math.min(zai ? CONCURRENCY : OPEN_CONCURRENCY, queue.length || 1) },
+            () => runNext()
+          )
+        ),
+      ]);
 
       // Yakuniy module_done hodisalari
       for (const m of applicable) {
@@ -406,7 +480,10 @@ export async function POST(req: NextRequest) {
       }
 
       const elapsedMs = Date.now() - startedAt;
-      const totalResults = [...collector.values()].reduce((acc, v) => acc + v.length, 0);
+      const totalResults = [...collector.values(), ...directResults.values()].reduce(
+        (acc, v) => acc + v.length,
+        0
+      );
       if (engineStats.size > 0) {
         const dist = [...engineStats.entries()]
           .map(([e, n]) => `${e} ×${n}`)

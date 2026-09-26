@@ -23,6 +23,8 @@ import {
   Zap,
   Network,
   Activity,
+  Layers,
+  Crosshair,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,6 +50,7 @@ import {
   TARGET_TYPES,
   extractPivots,
   normalizeUrl,
+  anyModuleTitle,
   type DeepStep,
   type LogLine,
   type ModuleResult,
@@ -66,6 +69,15 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   news: Newspaper,
   tech: Server,
   profiles: Link2,
+  // To'g'ridan-to'g'ri manbalar (OSINT Framework uslubi)
+  dns: Network,
+  whois: Activity,
+  subdomains: Layers,
+  "site-probe": Radar,
+  recon: Crosshair,
+  "ip-intel": Zap,
+  "whois-ip": Activity,
+  "ptr-recon": Server,
 };
 
 const EXAMPLES: { type: TargetType; query: string }[] = [
@@ -112,7 +124,7 @@ function fmtElapsed(ms: number): string {
 }
 
 function moduleTitleOf(id: string): string {
-  return OSINT_MODULES.find((m) => m.id === id)?.title ?? id;
+  return anyModuleTitle(id);
 }
 
 export default function Home() {
