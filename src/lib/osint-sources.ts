@@ -3,9 +3,13 @@
 //   DNS-over-HTTPS (dns.google), RDAP/WHOIS (rdap.org), crt.sh (sertifikat shaffofligi),
 //   Wayback Machine (web.archive.org), urlscan.io, Shodan InternetDB, ip-api.com,
 //   PTR yozuvlari va HackerTarget reverse IP.
+// Email manbalari: XposedOrNot (oqishlar), Gravatar (profil), MX/SPF/DMARC,
+//   korporativ domen tahlili va GitHub commit qidiruvi.
 // Har bir manba SearchResultItem[] qaytaradi — skaner oqimiga mos keladi.
 
+import { createHash } from "node:crypto";
 import type { SearchResultItem, TargetType } from "@/lib/osint";
+import { FREEMAIL_DOMAINS, PLATFORM_DOMAINS } from "@/lib/osint";
 
 // ===== Yordamchilar =====
 
@@ -17,10 +21,14 @@ function timeout(ms: number): AbortSignal {
 }
 
 /** JSON fetch — timeout va UA bilan. Natija JSON bo'lmasa null. */
-async function fj<T = unknown>(url: string, ms = 8000): Promise<T | null> {
+async function fj<T = unknown>(
+  url: string,
+  ms = 8000,
+  extraHeaders?: Record<string, string>
+): Promise<T | null> {
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": UA, Accept: "application/json" },
+      headers: { "User-Agent": UA, Accept: "application/json", ...extraHeaders },
       signal: timeout(ms),
       redirect: "follow",
     });
@@ -686,6 +694,315 @@ async function ptrReconSource(rawTarget: string): Promise<SearchResultItem[]> {
   return out;
 }
 
+// ===== Email yordamchilari =====
+
+export interface ParsedEmail {
+  local: string;
+  domain: string;
+  md5: string;
+}
+
+export function parseEmail(raw: string): ParsedEmail | null {
+  const t = raw.trim().toLowerCase();
+  const m = t.match(/^([a-z0-9._%+-]+)@([a-z0-9.-]+\.[a-z]{2,})$/i);
+  if (!m) return null;
+  return { local: m[1], domain: m[2], md5: createHash("md5").update(t).digest("hex") };
+}
+
+function mailProvider(mx: string): string {
+  const h = mx.toLowerCase();
+  if (h.includes("google") || h.includes("googlemail")) return "Google Workspace";
+  if (h.includes("outlook") || h.includes("microsoft")) return "Microsoft 365";
+  if (h.includes("yandex")) return "Yandex 360";
+  if (h.includes("mail.ru")) return "Mail.ru Cloud";
+  if (h.includes("zoho")) return "Zoho Mail";
+  if (h.includes("proton")) return "Proton Mail";
+  if (h.includes("pphosted") || h.includes("proofpoint")) return "Proofpoint (korporativ himoya)";
+  if (h.includes("mimecast")) return "Mimecast (korporativ himoya)";
+  if (h.includes("qq.com") || h.includes("tencent")) return "Tencent QQ Mail";
+  if (h.includes("secureserver")) return "GoDaddy";
+  if (h.includes("mailgun") || h.includes("sendgrid") || h.includes("amazonses")) return "ESP (yuborish xizmati)";
+  if (h.includes("icloud")) return "Apple iCloud";
+  return "";
+}
+
+// ===== Email: ma'lumot oqishlari (XposedOrNot) =====
+
+interface XonCheck {
+  breaches?: string[][];
+}
+interface XonAnalytics {
+  BreachMetrics?: {
+    risk?: { risk_label?: string; risk_score?: number }[];
+    passwords_strength?: Record<string, number> | Record<string, number>[];
+  };
+}
+
+async function breachesSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const em = parseEmail(rawTarget);
+  if (!em) return [];
+  const email = `${em.local}@${em.domain}`;
+  const [chk, ana] = await Promise.all([
+    fj<XonCheck>(
+      `https://api.xposedornot.com/v1/check-email/${encodeURIComponent(email)}`,
+      9000
+    ),
+    fj<XonAnalytics>(
+      `https://api.xposedornot.com/v1/breach-analytics?email=${encodeURIComponent(email)}`,
+      9000
+    ),
+  ]);
+  // chk === null — manba javob bermadi (natija yo'q deb hisoblamaymiz)
+  if (!chk) return [];
+  const names = [...new Set((chk.breaches ?? []).flat())].filter(Boolean);
+  if (names.length === 0) {
+    return [
+      item(
+        "Oqishlarda topilmadi",
+        "https://xposedornot.com/",
+        `Bu email XposedOrNot bazasidagi ommaviy ma'lumot oqishlarida qatnashmagan — yaxshi belgi. Baribir parollarni davriy yangilab turish tavsiya etiladi.`,
+        "xposedornot.com"
+      ),
+    ];
+  }
+  const out: SearchResultItem[] = [
+    item(
+      `Oqishlarda topildi: ${names.length} ta`,
+      "https://xposedornot.com/breach-explorer",
+      `Email ${names.length} ta ommaviy oqishga duch kelgan: ${cap(names, 14).join(", ")}${names.length > 14 ? " ..." : ""}`,
+      "xposedornot.com"
+    ),
+  ];
+  const risk = ana?.BreachMetrics?.risk?.[0];
+  const psRaw = ana?.BreachMetrics?.passwords_strength;
+  // API ba'zan massiv ichida qaytaradi: [{"EasyToCrack":120,...}]
+  const ps = Array.isArray(psRaw) ? psRaw[0] : psRaw;
+  if (risk?.risk_label || ps) {
+    const riskUz: Record<string, string> = {
+      Critical: "Juda xavfli",
+      High: "Xavfli",
+      Medium: "O'rtacha",
+      Low: "Past",
+    };
+    const psParts = ps
+      ? [`Oson ochiladigan: ${ps.EasyToCrack ?? 0}`, `Ochiq matn: ${ps.PlainText ?? 0}`, `Kuchli xesh: ${ps.StrongHash ?? 0}`]
+      : [];
+    out.push(
+      item(
+        `Xavf darajasi: ${riskUz[risk?.risk_label ?? ""] ?? risk?.risk_label ?? "noma'lum"}`,
+        "https://xposedornot.com/",
+        [
+          risk?.risk_score !== undefined ? `Risk ball: ${risk.risk_score}/100` : "",
+          psParts.length ? `Oqishlarda oshkor bo'lgan parollar — ${psParts.join(", ")}` : "",
+        ]
+          .filter(Boolean)
+          .join(" | "),
+        "xposedornot.com"
+      )
+    );
+  }
+  return out;
+}
+
+// ===== Email: Gravatar profili =====
+
+interface GravatarEntry {
+  hash?: string;
+  profileUrl?: string;
+  preferredUsername?: string;
+  displayName?: string;
+  aboutMe?: string;
+  currentLocation?: string;
+  photos?: { value?: string; type?: string }[];
+  accounts?: { domain?: string; url?: string; shortname?: string }[];
+  urls?: { title?: string; value?: string }[];
+}
+
+function stripHtml(s: string): string {
+  return s.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+async function gravatarSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const em = parseEmail(rawTarget);
+  if (!em) return [];
+  const r = await fj<{ entry?: GravatarEntry[] }>(
+    `https://en.gravatar.com/${em.md5}.json`,
+    8000
+  );
+  const e = r?.entry?.[0];
+  if (!e) return [];
+  const profileUrl = e.profileUrl || `https://gravatar.com/${em.md5}`;
+  const out: SearchResultItem[] = [];
+  const facts = [
+    e.displayName ? `Ism: ${e.displayName}` : "",
+    e.preferredUsername ? `Username: ${e.preferredUsername}` : "",
+    e.currentLocation ? `Joylashuv: ${e.currentLocation}` : "",
+    e.aboutMe ? `Bio: ${stripHtml(e.aboutMe).slice(0, 140)}` : "",
+  ].filter(Boolean);
+  out.push(
+    item(
+      `Gravatar profil: ${e.displayName || e.preferredUsername || em.local}`,
+      profileUrl,
+      facts.join(" | ") || "Email bilan bog'langan Gravatar profili mavjud",
+      "gravatar.com"
+    )
+  );
+  const accts = (e.accounts ?? []).filter((a) => a.url && a.shortname).slice(0, 6);
+  if (accts.length > 0) {
+    out.push(
+      item(
+        `Bog'langan profillar: ${accts.length} ta`,
+        profileUrl,
+        accts.map((a) => `${a.shortname}: ${a.url}`).join(", "),
+        "gravatar.com"
+      )
+    );
+  }
+  const links = (e.urls ?? []).filter((u) => u.value).slice(0, 3);
+  if (links.length > 0) {
+    out.push(
+      item(
+        `Saytlar: ${links.length} ta`,
+        links[0].value!,
+        links.map((u) => `${u.title || "havola"}: ${u.value}`).join(", "),
+        new URL(links[0].value!).hostname
+      )
+    );
+  }
+  return out;
+}
+
+// ===== Email: pochta serveri (MX/SPF/DMARC) =====
+
+async function mailboxSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const em = parseEmail(rawTarget);
+  if (!em) return [];
+  const [mx, txt, dmarc] = await Promise.all([
+    doh(em.domain, "MX"),
+    doh(em.domain, "TXT"),
+    doh(`_dmarc.${em.domain}`, "TXT"),
+  ]);
+  const out: SearchResultItem[] = [];
+  const mxHosts = [...new Set(mx.map((x) => nodot(x.data.replace(/^\d+\s+/, ""))))];
+  if (mxHosts.length === 0) {
+    out.push(
+      item(
+        "Pochta qabul qilmaydi",
+        `https://mxtoolbox.com/SuperTool.aspx?action=mx%3a${em.domain}`,
+        `${em.domain} domeni MX yozuviga ega emas — bu manzilga email yetib bormaydi (manzil noto'g'ri yoki domen o'lik).`,
+        "mxtoolbox.com"
+      )
+    );
+    return out;
+  }
+  const prov = mailProvider(mxHosts[0]);
+  out.push(
+    item(
+      `Pochta serveri: ${prov || mxHosts[0]}`,
+      `https://mxtoolbox.com/SuperTool.aspx?action=mx%3a${em.domain}`,
+      `MX: ${mxHosts.join(", ")}${prov ? ` — ${prov} orqali ishlaydi` : ""} | Domen pochtani qabul qiladi — manzil haqiqiy bo'lish ehtimoli yuqori`,
+      "mxtoolbox.com"
+    )
+  );
+  const txts = txt.map((x) => x.data.replace(/^"|"$/g, ""));
+  const spf = txts.find((t) => t.toLowerCase().startsWith("v=spf1"));
+  const dmarcRec = dmarc
+    .map((x) => x.data.replace(/^"|"$/g, ""))
+    .find((t) => t.toLowerCase().startsWith("v=dmarc1"));
+  if (spf || dmarcRec) {
+    const pol = dmarcRec?.match(/p=(\w+)/)?.[1];
+    out.push(
+      item(
+        "SPF/DMARC himoyasi",
+        `https://dnschecker.org/all-dns-records-of-domain.php?query=${em.domain}&rtype=ANY&dns=google`,
+        [
+          spf ? `SPF: ${spf.slice(0, 120)}` : "",
+          dmarcRec ? `DMARC: p=${pol ?? "?"}` : "",
+          pol === "none" ? "DMARC kuchsiz sozlangan (p=none) — soxta xatlar osonroq yuboriladi" : "",
+          pol === "reject" ? "DMARC qat'iy rejimda (p=reject)" : "",
+        ]
+          .filter(Boolean)
+          .join(" | "),
+        "dnschecker.org"
+      )
+    );
+  }
+  return out;
+}
+
+// ===== Email: korporativ domen tahlili (freemail bo'lmagan) =====
+
+async function corpDomainSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const em = parseEmail(rawTarget);
+  if (!em) return [];
+  if (
+    FREEMAIL_DOMAINS.has(em.domain) ||
+    PLATFORM_DOMAINS.has(em.domain) ||
+    [...PLATFORM_DOMAINS].some((d) => em.domain.endsWith(`.${d}`))
+  ) {
+    return [];
+  }
+  const [whois, site, a] = await Promise.all([
+    rdapDomainSource(em.domain),
+    siteProbeSource(em.domain),
+    doh(em.domain, "A"),
+  ]);
+  const out = [...whois, ...site];
+  const ips = a.map((x) => x.data).filter((d) => isV4Host(d));
+  if (ips.length > 0) {
+    out.push(
+      item(
+        `Sayt serveri: ${ips[0]}`,
+        `https://ipinfo.io/${ips[0]}`,
+        `${em.domain} sayti ${ips.join(", ")} serverida joylashgan — IP manzilni alohida skanerlash mumkin (portlar, tashkilot, qo'shnilar).`,
+        "ipinfo.io"
+      )
+    );
+  }
+  return out;
+}
+
+// ===== Email: GitHub commitlari =====
+
+interface GhCommitItem {
+  html_url?: string;
+  repository?: { full_name?: string; owner?: { login?: string } };
+  author?: { login?: string };
+  commit?: { author?: { name?: string; date?: string } };
+}
+
+async function githubSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const em = parseEmail(rawTarget);
+  if (!em) return [];
+  const email = `${em.local}@${em.domain}`;
+  const r = await fj<{ total_count?: number; items?: GhCommitItem[] }>(
+    `https://api.github.com/search/commits?q=author-email%3A${encodeURIComponent(email)}&per_page=20&sort=author-date&order=desc`,
+    9000,
+    { Accept: "application/vnd.github+json" }
+  );
+  if (!r || typeof r.total_count !== "number" || !r.items?.length) return [];
+  const items = r.items;
+  const names = [...new Set(items.map((c) => c.commit?.author?.name).filter(Boolean))] as string[];
+  const logins = [
+    ...new Set(items.map((c) => c.author?.login || c.repository?.owner?.login).filter(Boolean)),
+  ] as string[];
+  const repos = [...new Set(items.map((c) => c.repository?.full_name).filter(Boolean))] as string[];
+  const dates = (items.map((c) => c.commit?.author?.date).filter(Boolean) as string[]).sort();
+  const facts = [
+    names[0] ? `Git ismi: ${names[0]}` : "",
+    logins[0] ? `Profil: github.com/${logins[0]}` : "",
+    `${items.length < r.total_count ? "20+" : r.total_count} ta ommaviy commit`,
+    repos.length ? `Repozitoriyalar: ${cap(repos, 4).join(", ")}` : "",
+    dates.length ? `Faollik: ${dates[0].slice(0, 10)} — ${dates[dates.length - 1].slice(0, 10)}` : "",
+  ].filter(Boolean);
+  const firstUrl =
+    items[0]?.html_url ||
+    `https://github.com/search?q=author-email%3A${encodeURIComponent(email)}&type=commits`;
+  return [
+    item(`GitHub: ${logins[0] || names[0] || em.local}`, firstUrl, facts.join(" | "), "github.com"),
+  ];
+}
+
 // ===== Manbalar ro'yxati =====
 
 export interface DirectSourceDef {
@@ -694,14 +1011,22 @@ export interface DirectSourceDef {
 }
 
 export const DIRECT_RUNS: Record<string, (target: string) => Promise<SearchResultItem[]>> = {
+  // Domen
   dns: dnsSource,
   whois: rdapDomainSource,
   subdomains: subdomainsSource,
   "site-probe": siteProbeSource,
   recon: reconSource,
+  // IP
   "ip-intel": ipIntelSource,
   "whois-ip": rdapIpSource,
   "ptr-recon": ptrReconSource,
+  // Email
+  breaches: breachesSource,
+  gravatar: gravatarSource,
+  mailbox: mailboxSource,
+  "corp-domain": corpDomainSource,
+  "github-email": githubSource,
 };
 
 export function directSourceIdsFor(type: TargetType): string[] {
@@ -709,5 +1034,7 @@ export function directSourceIdsFor(type: TargetType): string[] {
     ? ["dns", "whois", "subdomains", "site-probe", "recon"]
     : type === "ip"
       ? ["ip-intel", "whois-ip", "ptr-recon"]
-      : [];
+      : type === "email"
+        ? ["breaches", "gravatar", "mailbox", "corp-domain", "github-email"]
+        : [];
 }

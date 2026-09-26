@@ -106,6 +106,42 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
     description: "Reverse DNS (PTR) va shu IP'da joylashgan boshqa domenlar",
     appliesTo: ["ip"],
   },
+  // ---- Email: OSINT Framework bepul manbalari ----
+  {
+    id: "breaches",
+    title: "Ma'lumot oqishlari",
+    icon: "ShieldAlert",
+    description: "Email qaysi ommaviy oqishlarga duch kelgan, parollar holati va xavf bali (XposedOrNot)",
+    appliesTo: ["email"],
+  },
+  {
+    id: "gravatar",
+    title: "Gravatar profil",
+    icon: "UserRound",
+    description: "Email bilan bog'langan avatar, ism, bio va bog'langan ijtimoiy profillar",
+    appliesTo: ["email"],
+  },
+  {
+    id: "mailbox",
+    title: "Pochta serveri",
+    icon: "MailCheck",
+    description: "MX, SPF va DMARC — pochta provayderi va manzil haqiqiyligini tekshirish",
+    appliesTo: ["email"],
+  },
+  {
+    id: "corp-domain",
+    title: "Korporativ domen",
+    icon: "Building2",
+    description: "Freemail bo'lmagan domenda: WHOIS, sayt tahlili, kontaktlar, ijtimoiy tarmoqlar, server IP",
+    appliesTo: ["email"],
+  },
+  {
+    id: "github-email",
+    title: "GitHub commitlari",
+    icon: "Github",
+    description: "Bu email bilan yozilgan ommaviy commitlar — haqiqiy ism va username aniqlanadi",
+    appliesTo: ["email"],
+  },
 ];
 
 export interface OsintModuleDef {
@@ -323,7 +359,7 @@ export function anyModuleTitle(moduleId: string): string {
 // ===== Adaptiv chuqur taramok yordamchilari =====
 
 /** Katta platformalar — ularning hostnomasi "domen pivot" sifatida foydasiz */
-const PLATFORM_DOMAINS = new Set([
+export const PLATFORM_DOMAINS = new Set([
   "instagram.com", "facebook.com", "x.com", "twitter.com", "t.me", "telegram.me",
   "linkedin.com", "tiktok.com", "vk.com", "ok.ru", "github.com", "gitlab.com",
   "medium.com", "pinterest.com", "behance.net", "reddit.com", "quora.com",
@@ -335,7 +371,7 @@ const PLATFORM_DOMAINS = new Set([
 ]);
 
 /** Bepul pochta domeni — bundan "domen pivot" chiqarmaymiz */
-const FREEMAIL_DOMAINS = new Set([
+export const FREEMAIL_DOMAINS = new Set([
   "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com",
   "aol.com", "proton.me", "protonmail.com", "mail.ru", "yandex.ru",
   "yandex.com", "zoho.com", "gmx.com", "inbox.ru", "bk.ru", "list.ru",

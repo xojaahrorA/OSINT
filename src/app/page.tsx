@@ -25,6 +25,10 @@ import {
   Activity,
   Layers,
   Crosshair,
+  UserRound,
+  MailCheck,
+  Building2,
+  Github,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -78,6 +82,12 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "ip-intel": Zap,
   "whois-ip": Activity,
   "ptr-recon": Server,
+  // Email — to'g'ridan-to'g'ri manbalar
+  breaches: ShieldAlert,
+  gravatar: UserRound,
+  mailbox: MailCheck,
+  "corp-domain": Building2,
+  "github-email": Github,
 };
 
 const EXAMPLES: { type: TargetType; query: string }[] = [
