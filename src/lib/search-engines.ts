@@ -6,7 +6,7 @@ import type { SearchResultItem } from "./osint";
  * Z.ai SDK faqat Z.ai sandbox muhitida ishlaydi. Lokal mashinalarda (Kali,
  * Windows, macOS) skaner avtomatik shu zanjirga o'tadi:
  *
- *   DuckDuckGo HTML → DuckDuckGo Lite → Mojeek → Brave → Qwant
+ *   DuckDuckGo HTML → DuckDuckGo Lite → Mojeek → Brave → Yahoo
  *   → Bing → Google Yangiliklar RSS → Bing Yangiliklar RSS → SearXNG
  *
  * Har bir dvigatel javobi operator filtri (site:/"ibora") o'tkaziladi —
@@ -17,7 +17,7 @@ import type { SearchResultItem } from "./osint";
 
 // dvigatellarni yangilaganda ham bu satr saqlansin — diagnostika kod
 // versiyasini shu belgi orqali aniqlaydi
-export const SEARCH_ENGINES_VERSION = "multi-10-engines-v2";
+export const SEARCH_ENGINES_VERSION = "multi-10-engines-v3";
 
 const UA_FIREFOX =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0";
@@ -432,6 +432,9 @@ export async function mojeekSearch(
     `https://www.mojeek.com/search?q=${encodeURIComponent(query)}`,
     {
       ua: UA_CHROME,
+      // Mojeek ba'zi tarmoqlarda javob bermay qoladi (TCP darajasida o'chiradi)
+      // — 6s da tez muvaffaqiyatsizlik zanjirni ushlab qolmasin
+      timeoutMs: 6000,
       headers: chromeBrowserHeaders({ Referer: "https://www.mojeek.com/" }),
     }
   );
@@ -454,10 +457,22 @@ export async function braveSearch(
   query: string,
   num: number
 ): Promise<SearchResultItem[]> {
-  const html = await fetchHtml(
-    `https://search.brave.com/search?q=${encodeURIComponent(query)}`,
-    { ua: UA_CHROME, headers: chromeBrowserHeaders() }
-  );
+  // Brave 429'ni burst limit sifatida beradi — 2s kutib BIR marta qayta
+  // so'raymiz; ko'p hollarda ikkinchi urinish o'tadi (adaptiv tezlik)
+  let html: string;
+  try {
+    html = await fetchHtml(
+      `https://search.brave.com/search?q=${encodeURIComponent(query)}`,
+      { ua: UA_CHROME, headers: chromeBrowserHeaders() }
+    );
+  } catch (err) {
+    if (!/HTTP 429/.test(String(err))) throw err;
+    await sleep(1800 + Math.floor(Math.random() * 700));
+    html = await fetchHtml(
+      `https://search.brave.com/search?q=${encodeURIComponent(query)}`,
+      { ua: UA_CHROME, headers: chromeBrowserHeaders() }
+    );
+  }
   if (/captcha|Captcha/i.test(html.slice(0, 4000)))
     throw new Error("Brave captcha");
   const results: SearchResultItem[] = [];
@@ -542,15 +557,17 @@ function decodeBingRedirect(url: string): string {
   }
 }
 
-export async function bingSearch(
+/** Bing bitta urinish — extraParams orqali turli formatlar sinab ko'riladi */
+async function bingSearchOnce(
   query: string,
-  num: number
+  num: number,
+  extraParams: string
 ): Promise<SearchResultItem[]> {
   const html = await fetchHtml(
     `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=${Math.max(
       num,
       10
-    )}&mkt=en-US&setlang=en`
+    )}&mkt=en-US&setlang=en${extraParams}`
   );
   const results: SearchResultItem[] = [];
   const blocks = html.match(/<li class="b_algo[\s\S]*?<\/li>/g) ?? [];
@@ -573,6 +590,125 @@ export async function bingSearch(
       host_name: hostOf(url),
     });
   }
+  return operatorFilter(query, results);
+}
+
+export async function bingSearch(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  let results = await bingSearchOnce(query, num, "");
+  if (results.length === 0) {
+    // Bing avtomatik trafikka vaqti-vaqti bilan BO'SH SERP qaytaradi
+    // (yumshoq blok — sahifa bor, natija yo'q). Qisqa pauza bilan boshqa
+    // formatda bir marta qayta so'raymiz — ko'p hollarda ochiladi.
+    await sleep(350 + Math.floor(Math.random() * 350));
+    results = await bingSearchOnce(query, num, "&FORM=QBRE&adlt=moderate");
+  }
+  return results;
+}
+
+// ===== 5b. Yahoo (Qwant o'rniga — DataDome server tomondan o'tmaydi) =====
+/**
+ * Yahoo Search oddiy HTML qaytaradi (server-render, JS kerak emas) va
+ * natijalari asosan Bing indeksidan keladi — Qwant o'rniga eng yaxshi
+ * almashtirish. Havolalar r.search.yahoo.com redirect ichida RU= parametrida
+ * haqiqiy manzil yashiringan.
+ *
+ * Muammo: Yahoo bot-verifikatsiya "raqsi" ishlatadi — /search 307 qilib
+ * /_bv/v.gif ga yo'naltiradi, u YBV cookie o'rnatadi, so'ng qayta /search
+ * ochiladi. Node fetch cookie'larni redirectlar orasida saqlamaydi, shuning
+ * uchun raqsni QO'LDA bajaramiz: har hop'da Set-Cookie ni jar'ga yig'amiz.
+ */
+async function yahooCookieDance(url: string): Promise<string> {
+  const jar = new Map<string, string>();
+  let current = url;
+  for (let hop = 0; hop < 6; hop++) {
+    const headers: Record<string, string> = {
+      "User-Agent": UA_CHROME,
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+    };
+    // MUHIM: to'liq Sec-Fetch-*/sec-ch-ua sarlavhalari bu raqsda ishlamaydi —
+    // redirect hop'larida qiymatlar nomuvofiq bo'lib Yahoo yana 307 qaytaradi
+    if (hop > 0) headers["Referer"] = "https://www.yahoo.com/";
+    if (jar.size)
+      headers["Cookie"] = [...jar.entries()]
+        .map(([k, v]) => `${k}=${v}`)
+        .join("; ");
+    const res = await fetch(current, {
+      headers,
+      redirect: "manual",
+      cache: "no-store",
+      signal: AbortSignal.timeout(9000),
+    });
+    // Set-Cookie larni jar'ga yig'ish (Node 18.14+: getSetCookie)
+    const setCookies =
+      typeof res.headers.getSetCookie === "function"
+        ? res.headers.getSetCookie()
+        : [res.headers.get("set-cookie") ?? []].flat();
+    for (const c of setCookies) {
+      const kv = c.split(";")[0] ?? "";
+      const eq = kv.indexOf("=");
+      if (eq > 0) jar.set(kv.slice(0, eq).trim(), kv.slice(eq + 1).trim());
+    }
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (loc) {
+        current = new URL(loc, current).toString();
+        continue;
+      }
+    }
+    if (res.ok) return await res.text();
+    throw new Error(`HTTP ${res.status}`);
+  }
+  throw new Error("Yahoo: redirect limiti");
+}
+
+export async function yahooSearch(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  const url = `https://search.yahoo.com/search?p=${encodeURIComponent(query)}&n=${Math.max(num, 10)}`;
+  // Yahoo bu yo'lda vaqti-vaqti bilan ulanish uzilishiga ham uchraydi —
+  // bitta qisqa pauzali qayta urinish barqarorlikni sezilarli oshiradi
+  let html: string;
+  try {
+    html = await yahooCookieDance(url);
+  } catch (err) {
+    await sleep(600 + Math.floor(Math.random() * 500));
+    html = await yahooCookieDance(url);
+  }
+  const results: SearchResultItem[] = [];
+  const seen = new Set<string>();
+  const re =
+    /<a[^>]+href="(https:\/\/r\.search\.yahoo\.com\/[^"\s]+?RU=([^/"\s]+)\/[^"\s]*)"[^>]*>([\s\S]*?)<\/a>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) && results.length < num) {
+    let url2: string;
+    try {
+      url2 = decodeEntities(decodeURIComponent(m[2]));
+    } catch {
+      url2 = decodeEntities(m[2]);
+    }
+    if (!/^https?:\/\//i.test(url2)) continue;
+    if (/(^|\.)yahoo\.[a-z.]+$/i.test(hostOf(url2))) continue; // ichki havolalar
+    const key = url2.replace(/[#?].*$/, "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // Sarlavha tozalash: "Wikipediahttps://en.wikipedia.org › wiki" shaklida
+    // breadcrumb boshlanadi — URL boshlanishidan oldingi qismi sarlavha
+    let name = stripTags(m[3]).split(/https?:\/\//)[0].trim();
+    if (!name) name = hostOf(url2);
+    results.push({
+      name: name.slice(0, 200),
+      url: url2,
+      snippet: "",
+      host_name: hostOf(url2),
+    });
+  }
+  if (results.length === 0) throw new Error("Yahoo: natija yo'q");
   return operatorFilter(query, results);
 }
 
@@ -867,12 +1003,13 @@ const ENGINE_GAP_MS: Record<string, number> = {
   "Google Yangiliklar": 900,
   "Bing Yangiliklar": 900,
   SearXNG: 1400,
+  Yahoo: 1500,
   DuckDuckGo: 1700,
   "DuckDuckGo Lite": 1700,
   Bing: 1700,
   Mojeek: 1700,
-  Brave: 1700,
-  Qwant: 2000,
+  // Brave rate-limiti eng qattiq — boshqalardan ko'proq dam beramiz
+  Brave: 2400,
 };
 const DEFAULT_GAP_MS = 1700;
 const lastEngineReq = new Map<string, number>();
@@ -900,11 +1037,12 @@ const ENGINE_CHAIN: { name: string; fn: EngineFn }[] = [
   { name: "Bing Yangiliklar", fn: bingNewsRssSearch },
   { name: "SearXNG", fn: searxSearch },
   { name: "Marginalia", fn: marginaliaSearch },
-  // 4-juftlik: qattiq bot-aniqlagichli dvigatellar — ko'pincha 403/429
+  // 4-juftlik: Yahoo — server-render HTML, Qwant'ning barqaror o'rnini bosadi
+  { name: "Yahoo", fn: yahooSearch },
+  // 5-juftlik: qattiq bot-aniqlagichli dvigatellar — ko'pincha 403/429,
+  // lekin ba'zi tarmoqlarda ishlaydi; sovitish rejimi avtomatik o'tkazadi
   { name: "Mojeek", fn: mojeekSearch },
   { name: "Brave", fn: braveSearch },
-  // 5-juftlik: DataDome himoyalangan — zaxira oxirida
-  { name: "Qwant", fn: qwantSearch },
 ];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -951,9 +1089,15 @@ async function tryEngine(
     );
   } catch (err) {
     const msg = String(err);
-    // Blok/rate-limit xatosi bo'lsa — dvigatelni 10 daqiqaga sovitamiz:
-    // keyingi skanerlar u dvigatelni umuman tekshirmaydi, zanjir tezlashadi.
-    if (/HTTP (403|429|503)/.test(msg)) {
+    // Blok/rate-limit xatosi bo'lsa — dvigatelni sovitamiz (adaptiv):
+    // 429 (vaqtinchalik rate-limit) 6 daqiqa — tez orada o'z-o'zidan ochiladi;
+    // 403/503 (qattiq blok) 10 daqiqa — uzoqroq dam berish ma'qul.
+    if (/HTTP 429/.test(msg)) {
+      setCooldown(e.name, 6);
+      errors.push(
+        `${e.name}: ${msg.slice(0, 60)} — 6 daqiqaga o'tkazib yuboriladi`
+      );
+    } else if (/HTTP (403|503)/.test(msg)) {
       setCooldown(e.name);
       errors.push(
         `${e.name}: ${msg.slice(0, 60)} — ${COOLDOWN_MINUTES} daqiqaga o'tkazib yuboriladi`

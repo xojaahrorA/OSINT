@@ -6,7 +6,7 @@ import {
   ddgLiteSearch,
   mojeekSearch,
   braveSearch,
-  qwantSearch,
+  yahooSearch,
   bingSearch,
   googleNewsRssSearch,
   bingNewsRssSearch,
@@ -48,7 +48,7 @@ const ENGINES: { id: string; label: string; fn: EngineFn }[] = [
   { id: "marginalia", label: "Marginalia", fn: marginaliaSearch },
   { id: "mojeek", label: "Mojeek", fn: mojeekSearch },
   { id: "brave", label: "Brave", fn: braveSearch },
-  { id: "qwant", label: "Qwant", fn: qwantSearch },
+  { id: "yahoo", label: "Yahoo", fn: yahooSearch },
 ];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
