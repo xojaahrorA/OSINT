@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { parsePhoneNumberFromString } from "libphonenumber-js/max";
 import type { SearchResultItem, TargetType } from "@/lib/osint";
 import { FREEMAIL_DOMAINS, PLATFORM_DOMAINS } from "@/lib/osint";
+import { scanWhatsMyName, type WmnProgressCb } from "@/lib/whatsmyname";
 
 // ===== Yordamchilar =====
 
@@ -1168,13 +1169,48 @@ async function usernameProbeSource(rawTarget: string): Promise<SearchResultItem[
         found.length ? `Mavjud: ${found.map((r) => r.platform).join(", ")}` : "",
         missing.length ? `Yo'q: ${missing.map((r) => r.platform).join(", ")}` : "",
         unknown.length ? `Aniqlanmadi: ${unknown.map((r) => `${r.platform} (${r.info})`).join(", ")}` : "",
-        "Qolgan 600+ saytni whatsmyname.app bilan tekshirish mumkin",
+        "700+ sayt to'liq tekshiruvi — «WhatsMyName — 700+ sayt» modulida",
       ]
         .filter(Boolean)
         .join(" | "),
       "whatsmyname.app"
     )
   );
+  return out;
+}
+
+// ===== WhatsMyName — 700+ sayt dataset bilan username tekshiruvi =====
+// whatsmyname.app bilan BIR XIL dataset va deteksiya qoidalari (src/lib/whatsmyname.ts).
+
+const WMN_MAX_RESULTS = 200;
+
+async function whatsMyNameSource(
+  rawTarget: string,
+  onProgress?: WmnProgressCb
+): Promise<SearchResultItem[]> {
+  const u = rawTarget.trim().replace(/^@/, "");
+  // WhatsMyName username'lari: harf/raqam/._- (dataset'dagi saytlar shu formatda ishlaydi)
+  if (!/^[a-zA-Z0-9._-]{2,64}$/.test(u)) return [];
+  const scan = await scanWhatsMyName(u, {
+    concurrency: 32,
+    timeoutMs: 9_000,
+    onProgress,
+  });
+  const out: SearchResultItem[] = scan.hits.slice(0, WMN_MAX_RESULTS).map((h) => {
+    let host = "whatsmyname.app";
+    try {
+      host = new URL(h.url).hostname.replace(/^www\./, "");
+    } catch {
+      /* standart host qoladi */
+    }
+    const cat = h.site.cat ? ` · ${h.site.cat}` : "";
+    return item(
+      `${h.site.name} — @${h.username} profili topildi`,
+      h.url,
+      `WhatsMyName dataset: profil mavjud [HTTP ${h.site.e_code} + imzo]${cat}`,
+      host
+    );
+  });
   return out;
 }
 
@@ -1293,10 +1329,14 @@ async function wikiPeopleSource(rawTarget: string): Promise<SearchResultItem[]> 
 
 export interface DirectSourceDef {
   id: string;
-  run: (target: string) => Promise<SearchResultItem[]>;
+  /** onProgress — og'ir manbalar (WhatsMyName) jonli progress log uchun */
+  run: (target: string, onProgress?: WmnProgressCb) => Promise<SearchResultItem[]>;
 }
 
-export const DIRECT_RUNS: Record<string, (target: string) => Promise<SearchResultItem[]>> = {
+export const DIRECT_RUNS: Record<
+  string,
+  (target: string, onProgress?: WmnProgressCb) => Promise<SearchResultItem[]>
+> = {
   // Domen
   dns: dnsSource,
   whois: rdapDomainSource,
@@ -1314,6 +1354,7 @@ export const DIRECT_RUNS: Record<string, (target: string) => Promise<SearchResul
   "corp-domain": corpDomainSource,
   "github-email": githubSource,
   // Username / Telefon / Ism
+  whatsmyname: whatsMyNameSource,
   "username-probe": usernameProbeSource,
   "phone-meta": phoneMetaSource,
   "wiki-people": wikiPeopleSource,
@@ -1327,7 +1368,7 @@ export function directSourceIdsFor(type: TargetType): string[] {
       : type === "email"
         ? ["breaches", "gravatar", "mailbox", "corp-domain", "github-email"]
         : type === "username"
-          ? ["username-probe"]
+          ? ["whatsmyname", "username-probe"]
           : type === "phone"
             ? ["phone-meta"]
             : type === "name"

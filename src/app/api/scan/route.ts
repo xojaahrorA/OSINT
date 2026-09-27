@@ -364,6 +364,23 @@ export async function POST(req: NextRequest) {
       const TOTAL_ALL = queue.length + directPlanned.length;
 
       // ===== To'g'ridan-to'g'ri manbalar — hammasi parallel, 5-15s ichida =====
+      // WhatsMyName (700+ sayt tekshiruvi) — og'ir modul: uzoqroq timeout + jonli progress.
+      const WMN_TIMEOUT_MS = 150_000;
+      const isHeavyDirect = (id: string) => id === "whatsmyname";
+      const makeWmnProgress = (title: string) => {
+        let lastLogAt = 0;
+        return (p: { checked: number; total: number; found: number }) => {
+          const now = Date.now();
+          if (now - lastLogAt < 10_000 && p.checked < p.total) return;
+          lastLogAt = now;
+          if (p.checked < p.total) {
+            log(
+              "info",
+              `[${title}] ${p.checked}/${p.total} sayt tekshirildi — ${p.found} profil topildi...`
+            );
+          }
+        };
+      };
       const directResults = new Map<string, SearchResultItem[]>();
       const runDirect = async () => {
         if (directPlanned.length === 0) return;
@@ -375,8 +392,13 @@ export async function POST(req: NextRequest) {
               const run = DIRECT_RUNS[meta.id];
               if (run) {
                 items = (await withTimeout(
-                  Promise.resolve(run(directTarget)),
-                  16000,
+                  Promise.resolve(
+                    run(
+                      directTarget,
+                      isHeavyDirect(meta.id) ? makeWmnProgress(meta.title) : undefined
+                    )
+                  ),
+                  isHeavyDirect(meta.id) ? WMN_TIMEOUT_MS : 16000,
                   meta.id
                 )) as SearchResultItem[];
               }
@@ -387,7 +409,9 @@ export async function POST(req: NextRequest) {
             if (items.length > 0) {
               log(
                 "ok",
-                `[${meta.title}] ✓ ${items.length} ta aniq ma'lumot topildi (to'g'ridan-to'g'ri manba)`
+                meta.id === "whatsmyname"
+                  ? `[${meta.title}] ✓ ${items.length} ta profil topildi (${items.length >= 200 ? "200+ tekshirilgan saytdan, " : ""}whatsmyname.app dataseti)`
+                  : `[${meta.title}] ✓ ${items.length} ta aniq ma'lumot topildi (to'g'ridan-to'g'ri manba)`
               );
             } else {
               log("info", `[${meta.title}] Bu manbada ma'lumot yo'q`);

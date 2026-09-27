@@ -144,6 +144,14 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
   },
   // ---- Username / Telefon / Ism: OSINT Framework bepul manbalari ----
   {
+    id: "whatsmyname",
+    title: "WhatsMyName — 700+ sayt",
+    icon: "ScanSearch",
+    description:
+      "Username whatsmyname.app dataseti bilan tekshiriladi: har bir sayt uchun aniq HTTP kod va imzo qoidalari (kategoriya: social, gaming, coding va h.k.)",
+    appliesTo: ["username"],
+  },
+  {
     id: "username-probe",
     title: "Profil tekshiruvi",
     icon: "UserCheck",

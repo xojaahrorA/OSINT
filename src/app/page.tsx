@@ -95,6 +95,7 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "corp-domain": Building2,
   "github-email": Github,
   // Username / Telefon / Ism — to'g'ridan-to'g'ri manbalar
+  whatsmyname: ScanSearch,
   "username-probe": UserCheck,
   "phone-meta": Phone,
   "wiki-people": BookOpen,
