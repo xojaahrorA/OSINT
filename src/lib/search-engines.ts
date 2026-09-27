@@ -17,7 +17,7 @@ import type { SearchResultItem } from "./osint";
 
 // dvigatellarni yangilaganda ham bu satr saqlansin — diagnostika kod
 // versiyasini shu belgi orqali aniqlaydi
-export const SEARCH_ENGINES_VERSION = "multi-10-engines-v3";
+export const SEARCH_ENGINES_VERSION = "multi-10-engines-v4";
 
 const UA_FIREFOX =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0";
@@ -90,12 +90,17 @@ async function fetchHtml(
     timeoutMs?: number;
     ua?: string;
     headers?: Record<string, string>;
+    method?: "GET" | "POST";
+    /** POST tanasi — masalan "q=..." forma (DDG POST-zaxira yo'li uchun) */
+    body?: string;
   } = {}
 ): Promise<string> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), opts.timeoutMs ?? 10000);
   try {
     const res = await fetch(url, {
+      method: opts.method ?? "GET",
+      body: opts.body,
       signal: ac.signal,
       headers: {
         "User-Agent": opts.ua ?? UA_FIREFOX,
@@ -345,17 +350,16 @@ export function reformulateQuery(query: string): string {
 }
 
 // ===== 1. DuckDuckGo HTML =====
-export async function ddgHtmlSearch(
-  query: string,
-  num: number
-): Promise<SearchResultItem[]> {
-  const html = await fetchHtml(
-    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
-  );
-  if (/anomaly|challenge|blocked/i.test(html.slice(0, 2000)))
-    throw new Error("DDG blok (anomaly)");
+/**
+ * DDG anti-bot holatlari:
+ *  - ba'zi IP'larga 202 + bo'sh bosh sahifa qaytaradi (challenge)
+ *  - ba'zi tarmoqlarda GET'ni umuman javob bermaydi (tarpit/timeout)
+ * 202/bo'sh sahifa bo'lsa — POST forma bilan bir zaxira urinish (DDG edge'da
+ * ba'zan GET blok bo'lib POST yo'li o'tadi). Timeout bo'lsa POST ham urinmaydi —
+ * shu host baribir o'lik.
+ */
+function parseDdgHtml(html: string, num: number): SearchResultItem[] {
   const results: SearchResultItem[] = [];
-
   const linkRe =
     /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
   const snipRe = /class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
@@ -379,19 +383,43 @@ export async function ddgHtmlSearch(
     });
     i++;
   }
+  return results;
+}
+
+export async function ddgHtmlSearch(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  let html: string;
+  try {
+    html = await fetchHtml(
+      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+      { timeoutMs: 6000 }
+    );
+  } catch (e) {
+    // Timeout — shu host javob bermayapti; POST bilan ham bo'lmaydi
+    throw e;
+  }
+  let results = parseDdgHtml(html, num);
+  if (results.length === 0) {
+    // challenge/202 holat — POST forma bilan zaxira urinish
+    try {
+      const html2 = await fetchHtml("https://html.duckduckgo.com/html/", {
+        timeoutMs: 6000,
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `q=${encodeURIComponent(query)}`,
+      });
+      results = parseDdgHtml(html2, num);
+    } catch {
+      /* zaxira ham o'tmadi — quyida 0 natija xatosi */
+    }
+  }
   return operatorFilter(query, results);
 }
 
 // ===== 2. DuckDuckGo Lite =====
-export async function ddgLiteSearch(
-  query: string,
-  num: number
-): Promise<SearchResultItem[]> {
-  const html = await fetchHtml(
-    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`
-  );
-  if (/anomaly|challenge|blocked/i.test(html.slice(0, 2000)))
-    throw new Error("DDG blok (anomaly)");
+function parseDdgLiteHtml(html: string, num: number): SearchResultItem[] {
   const results: SearchResultItem[] = [];
   // lite: <a rel="nofollow" href="URL" class='result-link'>Title</a>
   const re =
@@ -419,6 +447,36 @@ export async function ddgLiteSearch(
       i++;
     }
     if (results.length > 0) break;
+  }
+  return results;
+}
+
+export async function ddgLiteSearch(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  let html: string;
+  try {
+    html = await fetchHtml(
+      `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`,
+      { timeoutMs: 6000 }
+    );
+  } catch (e) {
+    throw e; // timeout — POST ham yordam bermaydi
+  }
+  let results = parseDdgLiteHtml(html, num);
+  if (results.length === 0) {
+    try {
+      const html2 = await fetchHtml("https://lite.duckduckgo.com/lite/", {
+        timeoutMs: 6000,
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `q=${encodeURIComponent(query)}`,
+      });
+      results = parseDdgLiteHtml(html2, num);
+    } catch {
+      /* zaxira ham o'tmadi */
+    }
   }
   return operatorFilter(query, results);
 }
@@ -895,8 +953,8 @@ export function parseSearxHtml(
  * Qwant DataDome captcha qo'yganidan keyin shu dvigatel uning o'rnini
  * egallaydi. api.marginalia.nu ochiq kalit bilan ishlaydi, JSON qaytaradi.
  * Kichik/nostandart vebga ixtisoslashgan — OSINT uchun qo'shimcha qamrov.
- * QAYD: API ba'zan sekinlashadi/osilib qoladi — shuning uchun qisqa 5s
- * timeout qo'llanadi; osilib qolsa zanjir tezda keyingi dvigatelga o'tadi.
+ * QAYD: API ba'zan sekinlashadi/osilib qoladi — 11s timeout; osilib qolsa
+ * zanjir keyingi dvigatelga o'tadi (tashqi cap ENGINE_TIMEOUTS'da 12s).
  */
 export async function marginaliaSearch(
   query: string,
@@ -907,7 +965,7 @@ export async function marginaliaSearch(
     `https://api.marginalia.nu/public/search/${encodeURIComponent(cleanQuery)}`,
     {
       ua: UA_CHROME,
-      timeoutMs: 5000,
+      timeoutMs: 11000,
       headers: { Accept: "application/json" },
     }
   );
@@ -1075,7 +1133,12 @@ const ENGINE_CHAIN: { name: string; fn: EngineFn }[] = [
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const ENGINE_TIMEOUT_MS = 6500;
+/** Har dvigatel uchun tashqi timeout (tryEngine cap) — sekin API'larga uzoqroq */
+const ENGINE_TIMEOUTS: Record<string, number> = {
+  Marginalia: 12_000, // API o'rtacha 1-3s, lekin ba'zan 8-10s gacha sekinlashadi
+  SearXNG: 10_000, // 3 instansli rotatsiya — budget cheklangan bo'lsin
+};
+const DEFAULT_ENGINE_TIMEOUT_MS = 6500;
 const CHAIN_BUDGET_MS = 17000;
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -1106,7 +1169,10 @@ async function tryEngine(
   // Har dvigatelga minimal pauza — bloklanishning oldini oladi
   await paceEngine(e.name);
   try {
-    const raw = await withTimeout(e.fn(query, num), ENGINE_TIMEOUT_MS);
+    const raw = await withTimeout(
+      e.fn(query, num),
+      ENGINE_TIMEOUTS[e.name] ?? DEFAULT_ENGINE_TIMEOUT_MS
+    );
     // Operator filtri dvigatel ichida, bu yerda umumiy maqbuliyat filtri:
     const r = relevanceFilter(query, raw);
     if (r.length > 0) return r;
@@ -1129,6 +1195,13 @@ async function tryEngine(
       setCooldown(e.name);
       errors.push(
         `${e.name}: ${msg.slice(0, 60)} — ${COOLDOWN_MINUTES} daqiqaga o'tkazib yuboriladi`
+      );
+    } else if (/timeout|AbortError|aborted/i.test(msg)) {
+      // MUHIM: timeout ham cooldown beradi — aks holda har so'rov yana 6-8s
+      // o'lik dvigatelni kutib qoladi (DDG tarpit holati shunday edi)
+      setCooldown(e.name, 3);
+      errors.push(
+        `${e.name}: ${msg.slice(0, 60)} — 3 daqiqaga o'tkazib yuboriladi (javob yo'q)`
       );
     } else {
       errors.push(`${e.name}: ${msg.slice(0, 60)}`);

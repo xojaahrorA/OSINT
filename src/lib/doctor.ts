@@ -148,13 +148,29 @@ export async function runDiagnostics(): Promise<DoctorReport> {
   });
 
   // 5. Har bir dvigatelni real so'rov bilan tekshirish ( stagger bilan parallellashgan )
+  // Xato turlari bo'yicha tushuntirishlar — foydalanuvchi nima bo'layotganini tushunishi uchun
+  const explainError = (msg: string): string => {
+    if (/timeout|AbortError|aborted/i.test(msg))
+      return " — bu dvigatel sizning tarmog'ingizdan javob bermayapti (IP filtri yoki server o'lik). Skaner uni avtomatik o'tkazib yuboradi va boshqa dvigatellardan davom etadi.";
+    if (/HTTP 403/.test(msg))
+      return " — dvigatel sizning IP-manzilingizga kirishni taqiqlagan (bot-himoyasi/rejion bloki). Bu xavfsiz emas — skaner boshqa dvigatellardan davom etadi.";
+    if (/HTTP 429/.test(msg))
+      return " — rate-limit: juda ko'p so'rov yuborilgan. Bir necha daqiqa kutib tursangiz o'z-o'zidan ochiladi.";
+    if (/HTTP 503/.test(msg))
+      return " — dvigatel serveri vaqtincha band yoki sizning IP'ga xizmat ko'rsatmayapti.";
+    if (/captcha|antibot|verifying|challenge/i.test(msg))
+      return " — sayt captcha/anti-bot himoyasini yoqgan, server tomondan chetlab o'tib bo'lmaydi.";
+    return " — skaner boshqa dvigatellardan davom etadi.";
+  };
   const workingEngines: string[] = [];
   await Promise.all(
     ENGINES.map(async (e, idx) => {
       await sleep(idx * 300); // bir vaqtda yuborilmasligi uchun stagger
       const t0 = Date.now();
       try {
-        const results = await withTimeout(e.fn("Tashkent", 5), 8000);
+        // Marginalia/SearXNG sekinroq — ularga uzunroq ruxsat (14s)
+        const cap = e.id === "marginalia" || e.id === "searx" ? 14000 : 9000;
+        const results = await withTimeout(e.fn("Tashkent", 5), cap);
         const ms = Date.now() - t0;
         if (results.length > 0) {
           workingEngines.push(e.label);
@@ -170,7 +186,8 @@ export async function runDiagnostics(): Promise<DoctorReport> {
             id: `engine-${e.id}`,
             label: e.label,
             status: "warn",
-            detail: "Javob berdi, lekin 0 natija (blok yoki soxta javob filtri)",
+            detail:
+              "Javob berdi, lekin 0 natija (blok sahifasi yoki soxta javob filtri). Skaner boshqa dvigatellardan davom etadi.",
             ms,
           });
         }
@@ -184,7 +201,7 @@ export async function runDiagnostics(): Promise<DoctorReport> {
           id: `engine-${e.id}`,
           label: e.label,
           status: "fail",
-          detail: `${msg}${cooling}`,
+          detail: `${msg}${cooling}${explainError(msg)}`,
           ms: Date.now() - t0,
         });
       }
