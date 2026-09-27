@@ -8,7 +8,13 @@ import {
   type TargetType,
   type ScanEvent,
 } from "@/lib/osint";
-import { searchOpenWeb, relevanceFilter } from "@/lib/search-engines";
+import {
+  searchOpenWeb,
+  relevanceFilter,
+  setSpeedProfile,
+  SPEED_PROFILES,
+  type SpeedProfile,
+} from "@/lib/search-engines";
 import { DIRECT_RUNS, cleanDomain } from "@/lib/osint-sources";
 
 export const maxDuration = 180;
@@ -17,12 +23,19 @@ const VALID_TYPES: TargetType[] = ["username", "email", "phone", "name", "domain
 
 // So'rovlar orasidagi pauza va parallellik — qidiruv dvigatelining rate-limit
 // (429 Too Many Requests) chekloviga tushmaslik uchun.
+// Tezlik UI'dagi "Tezlik" tanlovi orqali boshqariladi (speed parametri):
+//   sekin — bloklanishdan maksimal himoya, tezkor — maksimal tezlik.
+// Dvigatel ichidagi pauzalarni ham setSpeedProfile() moslashtiradi.
+const SPEED_STAGGER: Record<
+  SpeedProfile,
+  { zai: number; open: number; label: string }
+> = {
+  sekin: { zai: 800, open: 2400, label: "SEKIN — bloklanishdan maksimal himoya (2x pauza)" },
+  oddiy: { zai: 400, open: 1200, label: "ODDIY — muvozanatli tezlik (standart)" },
+  tez: { zai: 200, open: 600, label: "TEZ — 2 barobar tezroq" },
+  tezkor: { zai: 100, open: 250, label: "TEZKOR — maksimal tezlik, blok xavfi yuqori" },
+};
 const CONCURRENCY = 2;
-const STAGGER_MS = 400;
-// Ochiq dvigatel zanjiri: pauzalar har dvigatel bo'yicha paceEngine() bilan
-// nazorat qilinadi va zanjir boshlanishi rotatsiya qilinadi — shuning uchun
-// umumiy pauza qisqargan sari skaner tezroq yuradi, bloklanish ortmaydi.
-const OPEN_STAGGER_MS = 1200;
 const OPEN_CONCURRENCY = 1;
 const QUERY_TIMEOUT_MS = 25000;
 const RETRY_DELAYS_MS = [1500, 3500, 7000];
@@ -51,6 +64,7 @@ export async function POST(req: NextRequest) {
     query?: string;
     modules?: string[];
     querySet?: string;
+    speed?: string;
   };
   try {
     body = await req.json();
@@ -72,6 +86,14 @@ export async function POST(req: NextRequest) {
   const requestedModules = Array.isArray(body.modules)
     ? body.modules.filter((id): id is string => typeof id === "string")
     : null;
+
+  // Tezlik profili — UI'dan keladi (localStorage'da saqlanadi)
+  const speed: SpeedProfile =
+    body.speed && (SPEED_PROFILES as string[]).includes(body.speed)
+      ? (body.speed as SpeedProfile)
+      : "oddiy";
+  // Dvigatel ichidagi pauzalarni (paceEngine) ham shu profilga moslashtiramiz
+  setSpeedProfile(speed);
 
   if (!VALID_TYPES.includes(targetType) || query.length < 2) {
     return Response.json(
@@ -182,6 +204,7 @@ export async function POST(req: NextRequest) {
         }, 0)} ta qidiruv so'rovi navbatga qo'yildi.`
       );
       log("sys", "Rejim: PASSIVE OSINT — faqat ochiq manbalar, tizimga ruxsatsiz kirish yo'q.");
+      log("sys", `Tezlik: ${SPEED_STAGGER[speed].label}`);
       if (directPlanned.length > 0) {
         log(
           "sys",
@@ -420,7 +443,7 @@ export async function POST(req: NextRequest) {
           }
           processed++;
           send({ type: "progress", count: processed, total: TOTAL_ALL });
-          await sleep(zai ? STAGGER_MS : OPEN_STAGGER_MS);
+          await sleep(zai ? SPEED_STAGGER[speed].zai : SPEED_STAGGER[speed].open);
         }
       };
 

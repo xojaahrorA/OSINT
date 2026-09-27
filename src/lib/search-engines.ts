@@ -1014,8 +1014,36 @@ const ENGINE_GAP_MS: Record<string, number> = {
 const DEFAULT_GAP_MS = 1700;
 const lastEngineReq = new Map<string, number>();
 
+// ===== Tezlik profili — foydalanuvchi UI'dagi "Tezlik" tanlovi orqali =====
+/**
+ * Skaner juda tez yursa dvigatellar bloklaydi, juda sekin yursa ko'p kutadi.
+ * Shu sababli pauzalar foizli ko'paytiruvchi orqali boshqariladi:
+ *   sekin  — barcha pauzalar 2x (bloklanishdan maksimal himoya)
+ *   oddiy  — standart muvozanat
+ *   tez    — ~1.7x tezroq
+ *   tezkor — maksimal tezlik, blok xavfi yuqori
+ * Har skaner boshlanishida scan route setSpeedProfile() chaqiradi.
+ */
+export type SpeedProfile = "sekin" | "oddiy" | "tez" | "tezkor";
+export const SPEED_PROFILES: SpeedProfile[] = ["sekin", "oddiy", "tez", "tezkor"];
+const GAP_MULTIPLIER: Record<SpeedProfile, number> = {
+  sekin: 2,
+  oddiy: 1,
+  tez: 0.6,
+  tezkor: 0.35,
+};
+let activeSpeed: SpeedProfile = "oddiy";
+
+export function setSpeedProfile(p: SpeedProfile): void {
+  activeSpeed = SPEED_PROFILES.includes(p) ? p : "oddiy";
+}
+
+export function getSpeedProfile(): SpeedProfile {
+  return activeSpeed;
+}
+
 async function paceEngine(name: string): Promise<void> {
-  const gap = ENGINE_GAP_MS[name] ?? DEFAULT_GAP_MS;
+  const gap = (ENGINE_GAP_MS[name] ?? DEFAULT_GAP_MS) * GAP_MULTIPLIER[activeSpeed];
   const last = lastEngineReq.get(name) ?? 0;
   const wait = last + gap - Date.now();
   if (wait > 0) await sleep(Math.min(wait, 3200));

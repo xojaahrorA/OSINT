@@ -32,6 +32,9 @@ import {
   UserCheck,
   Phone,
   BookOpen,
+  Gauge,
+  Snail,
+  Rocket,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -109,6 +112,43 @@ const EXAMPLES: { type: TargetType; query: string }[] = [
 // Rekursiv dvigatel chegaralari — rate-limit va beqarorlikka qarshi himoya
 const MAX_SCANS = 8; // bitta sessiyada eng ko'pi bilan 8 skaner
 const MAX_DEPTH_DEEP = 3; // chuqur rejimda rekursiya chuqurligi
+
+// Tezlik darajalari — UI'dagi "Tezlik" boshqaruvi (localStorage: osint-speed).
+// Scan API'ga speed parametri sifatida uzatiladi — server pauzalarni shunga
+// qarab kengaytiradi/qisqartiradi, dvigatel ichidagi paceEngine ham shunga mos.
+type SpeedLevel = "sekin" | "oddiy" | "tez" | "tezkor";
+const SPEED_LEVELS: {
+  val: SpeedLevel;
+  label: string;
+  hint: string;
+  Icon: typeof Gauge;
+}[] = [
+  {
+    val: "sekin",
+    label: "Sekin",
+    hint: "Bloklanishdan maksimal himoya — barcha pauzalar 2x",
+    Icon: Snail,
+  },
+  {
+    val: "oddiy",
+    label: "Oddiy",
+    hint: "Muvozanatli tezlik (standart)",
+    Icon: Gauge,
+  },
+  {
+    val: "tez",
+    label: "Tez",
+    hint: "2 barobar tezroq — yaxshi holatda ishlating",
+    Icon: Zap,
+  },
+  {
+    val: "tezkor",
+    label: "Tezkor",
+    hint: "Maksimal tezlik — bloklanish xavfi yuqori",
+    Icon: Rocket,
+  },
+];
+
 const AUTO_PER_SCAN = 2; // har skanerdan avtomatik navbatga chiqadigan pivotlar
 
 type VerdictInfo = { verdict: "related" | "unsure" | "unrelated"; reason: string };
@@ -150,7 +190,30 @@ export default function Home() {
   const [type, setType] = useState<TargetType>("username");
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<"normal" | "deep">("deep");
-  const [step, setStep] = useState<DeepStep>("idle");
+  // Tezlik boshqaruvi — tanlov localStorage'da saqlanadi va skanerga uzatiladi
+  const [speed, setSpeed] = useState<SpeedLevel>("oddiy");
+  const speedRef = useRef<SpeedLevel>("oddiy");
+  useEffect(() => {
+    try {
+      const s = localStorage.getItem("osint-speed");
+      if (s === "sekin" || s === "oddiy" || s === "tez" || s === "tezkor") {
+        setSpeed(s);
+        speedRef.current = s;
+      }
+    } catch {
+      /* noop */
+    }
+  }, []);
+  const changeSpeed = (s: SpeedLevel) => {
+    setSpeed(s);
+    speedRef.current = s;
+    try {
+      localStorage.setItem("osint-speed", s);
+    } catch {
+      /* noop */
+    }
+  };
+   const [step, setStep] = useState<DeepStep>("idle");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [modules, setModules] = useState<ModuleResult[]>([]);
   const [activeTab, setActiveTab] = useState<string>("");
@@ -173,7 +236,8 @@ export default function Home() {
   const [bookmarks, setBookmarks] = useState<BookmarkItem[]>([]);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [bookmarksLoading, setBookmarksLoading] = useState(false);
-  const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set());
+
+ const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set());
 
   const [recent, setRecent] = useState<{ type: TargetType; query: string }[]>([]);
 
@@ -366,7 +430,13 @@ export default function Home() {
       const res = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: job.kind, query: job.value, querySet, modules: moduleFilter }),
+        body: JSON.stringify({
+          type: job.kind,
+          query: job.value,
+          querySet,
+          modules: moduleFilter,
+          speed: speedRef.current,
+        }),
         signal: ctrl.signal,
       });
       if (!res.ok || !res.body) {
@@ -675,7 +745,7 @@ export default function Home() {
 
     pushLog(
       "sys",
-      `SESSIYA BOSHLANDI — rejim: ${mode === "deep" ? "CHUQUR (adaptiv + rekursiv)" : "TEZ"}`
+      `SESSIYA BOSHLANDI — rejim: ${mode === "deep" ? "CHUQUR (adaptiv + rekursiv)" : "TEZ"} · tezlik: ${SPEED_LEVELS.find((s) => s.val === speedRef.current)?.label ?? "Oddiy"}`
     );
 
     // 1-BOSQICH: dunyo bo'ylab — barcha ochiq tarmoqlar
@@ -1000,6 +1070,30 @@ export default function Home() {
                 <Zap className="inline w-3 h-3 mr-1 -mt-0.5" />
                 Tez skaner
               </button>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2 mt-2">
+              <span className="text-[11px] text-muted-foreground mr-1 flex items-center gap-1">
+                <Gauge className="w-3 h-3" /> Tezlik:
+              </span>
+              {SPEED_LEVELS.map(({ val, label, hint, Icon }) => (
+                <button
+                  key={val}
+                  onClick={() => changeSpeed(val)}
+                  title={hint}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                    speed === val
+                      ? "bg-primary/15 text-primary border-primary/40"
+                      : "bg-secondary/50 text-muted-foreground border-transparent hover:border-primary/30"
+                  }`}
+                  aria-pressed={speed === val}
+                >
+                  <Icon className="inline w-3 h-3 mr-1 -mt-0.5" />
+                  {label}
+                </button>
+              ))}
+              <span className="text-[10px] text-muted-foreground/70 ml-1">
+                {SPEED_LEVELS.find((s) => s.val === speed)?.hint}
+              </span>
             </div>
             <div className="flex flex-wrap items-center gap-1.5 mt-3 justify-center">
               <span className="text-[11px] text-muted-foreground mr-1">
