@@ -48,6 +48,13 @@ import { TerminalLog } from "@/components/osint/terminal-log";
 import { ResultCard } from "@/components/osint/result-card";
 import { AiPanel } from "@/components/osint/ai-panel";
 import { DeepPanel, type PendingPivot, type SourceStat } from "@/components/osint/deep-panel";
+import { IntelPanel } from "@/components/osint/intel-panel";
+import {
+  extractIntelBatch,
+  mergeIntel,
+  type IntelEntry,
+  type IntelSourceItem,
+} from "@/lib/intel";
 import { ReviewPanel, type ReviewEntry } from "@/components/osint/review-panel";
 import { DiagnosticsDialog } from "@/components/osint/diagnostics-dialog";
 import {
@@ -56,7 +63,6 @@ import {
 } from "@/components/osint/bookmarks-sheet";
 import {
   OSINT_MODULES,
-  PIVOT_PRIORITY,
   TARGET_TYPES,
   extractPivots,
   normalizeUrl,
@@ -110,9 +116,10 @@ const EXAMPLES: { type: TargetType; query: string }[] = [
   { type: "ip", query: "8.8.8.8" },
 ];
 
-// Rekursiv dvigatel chegaralari — rate-limit va beqarorlikka qarshi himoya
+// Skaner chegaralari — rate-limit va beqarorlikka qarshi himoya.
+// Qo'shimcha qidiruvlar FAQAT foydalanuvchi tanlagan izlar bo'yicha ishlaydi —
+// tizim topgan ma'lumot bo'yicha o'zi qidiruv ishga tushirmaydi.
 const MAX_SCANS = 8; // bitta sessiyada eng ko'pi bilan 8 skaner
-const MAX_DEPTH_DEEP = 3; // chuqur rejimda rekursiya chuqurligi
 
 // Tezlik darajalari — UI'dagi "Tezlik" boshqaruvi (localStorage: osint-speed).
 // Scan API'ga speed parametri sifatida uzatiladi — server pauzalarni shunga
@@ -150,7 +157,6 @@ const SPEED_LEVELS: {
   },
 ];
 
-const AUTO_PER_SCAN = 2; // har skanerdan avtomatik navbatga chiqadigan pivotlar
 
 type VerdictInfo = { verdict: "related" | "unsure" | "unrelated"; reason: string };
 
@@ -158,6 +164,7 @@ interface NewResult {
   key: string;
   item: SearchResultItem;
   moduleTitle: string;
+  moduleId?: string;
 }
 
 interface PivotJob {
@@ -171,7 +178,7 @@ const STEP_BADGES: Record<DeepStep, string> = {
   global: "1-bosqich · global taramok",
   focused: "2-bosqich · manba fokusi",
   review: "AI solishtirish",
-  pivots: "chuqur pivot qidiruvi",
+  pivots: "qo'shimcha qidiruv (qo'lda)",
   done: "yakunlandi",
   stopped: "to'xtatildi",
 };
@@ -242,6 +249,13 @@ export default function Home() {
 
   const [recent, setRecent] = useState<{ type: TargetType; query: string }[]>([]);
 
+  // «Topilgan qo'shimcha ma'lumotlar» — skaner davomida yig'ilgan telefon,
+  // email, ism-familiya va h.k. Alohida joyda saqlanadi, faqat foydalanuvchi
+  // tanlagani bo'yicha qidiriladi.
+  const [intel, setIntel] = useState<IntelEntry[]>([]);
+  const intelRef = useRef<IntelEntry[]>([]);
+  const [searchedKeys, setSearchedKeys] = useState<Set<string>>(new Set());
+
   const scanAbortRef = useRef<AbortController | null>(null);
   const aiAbortRef = useRef<AbortController | null>(null);
   const startedAtRef = useRef(0);
@@ -259,7 +273,6 @@ export default function Home() {
     scansDone: 0,
     rootQuery: "",
     rootType: "username" as TargetType,
-    maxDepth: MAX_DEPTH_DEEP,
   });
   const resultsRef = useRef<Map<string, { item: SearchResultItem; moduleTitle: string }>>(new Map());
   const verdictsRef = useRef<Record<string, VerdictInfo>>({});
@@ -347,6 +360,7 @@ export default function Home() {
     );
 
     const newResults: NewResult[] = [];
+    const intelBatch: IntelSourceItem[] = [];
 
     const handleEvent = (ev: ScanEvent) => {
       switch (ev.type) {
@@ -406,10 +420,11 @@ export default function Home() {
           const mTitle = ev.moduleTitle ?? ev.moduleId!;
           let added = 0;
           for (const r of incoming) {
+            intelBatch.push({ item: r, moduleTitle: mTitle, moduleId: ev.moduleId });
             const k = normalizeUrl(r.url);
             if (!eng.knownUrls.has(k)) {
               eng.knownUrls.add(k);
-              newResults.push({ key: k, item: r, moduleTitle: mTitle });
+              newResults.push({ key: k, item: r, moduleTitle: mTitle, moduleId: ev.moduleId });
               resultsRef.current.set(k, { item: r, moduleTitle: mTitle });
               added++;
             }
@@ -473,18 +488,31 @@ export default function Home() {
       }
     }
 
+    // Topilgan qo'shimcha ma'lumotlarni alohida panelga yig'amiz —
+    // tizim o'zi qidirmaydi, faqat foydalanuvchi tanlagani qidiriladi
+    if (intelBatch.length > 0) {
+      const add = extractIntelBatch(intelBatch, [eng.rootQuery]);
+      const merged = mergeIntel(intelRef.current, add);
+      intelRef.current = merged;
+      setIntel(merged);
+    }
+
     eng.scansDone++;
     setScansDone(eng.scansDone);
     return newResults;
   };
 
   // ===== Pivotlar yigimi — yangi natijalardan avtomatik izlarni ajratadi =====
+  // Profil sanovchi modullar — ularning URL hostlari profil saytlari, "domen iz" emas
+  const PROFILE_ENUM_MODS = new Set(["whatsmyname", "profiles", "username-probe"]);
   const harvestPivots = (newResults: NewResult[]) => {
     const eng = engineRef.current;
     let addedCount = 0;
-    for (const { key, item } of newResults) {
+    for (const { key, item, moduleId } of newResults) {
       if (skippedRef.current.has(key)) continue;
       for (const p of extractPivots(item)) {
+        // WhatsMyName/profil modullari natijasidagi sayt domeni — alohida iz emas
+        if (p.kind === "domain" && moduleId && PROFILE_ENUM_MODS.has(moduleId)) continue;
         const pk = `${p.kind}:${p.value}`;
         if (eng.runSet.has(pk)) continue;
         if (eng.pending.some((x) => x.kind === p.kind && x.value === p.value)) continue;
@@ -494,7 +522,7 @@ export default function Home() {
     }
     setPendingCandidates(eng.pending.filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`)));
     if (addedCount > 0) {
-      pushLog("ok", `${addedCount} ta yangi iz (pivot) ajratib olindi — navbatda`);
+      pushLog("ok", `${addedCount} ta yangi ma'lumot ajratildi — «Topilgan qo'shimcha ma'lumotlar» panelida`);
     }
   };
 
@@ -601,22 +629,6 @@ export default function Home() {
         const newResults = await runScanTarget(job, "extended");
         if (eng.stopped) break;
         harvestPivots(newResults);
-        // Rekursiya: yangi topilgan izlardan eng ustuvorlari navbatga
-        if (job.depth + 1 <= eng.maxDepth && eng.scansDone < MAX_SCANS) {
-          const picks = eng.pending
-            .filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`))
-            .sort((a, b) => PIVOT_PRIORITY[a.kind] - PIVOT_PRIORITY[b.kind])
-            .slice(0, AUTO_PER_SCAN);
-          for (const c of picks) {
-            eng.runSet.add(`${c.kind}:${c.value}`);
-            eng.queue.push({ kind: c.kind, value: c.value, depth: job.depth + 1 });
-            pushLog(
-              "sys",
-              `Rekursiya: "${c.value}" (${c.kind.toUpperCase()}) bo'yicha chuqurlik ${job.depth + 1} skaner navbatga qo'shildi`
-            );
-          }
-          setPendingCandidates(eng.pending.filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`)));
-        }
       }
     } finally {
       processingRef.current = false;
@@ -627,7 +639,7 @@ export default function Home() {
     }
     await finalVerdictPass();
     setStep("done");
-    pushLog("sys", "Rekursiv chuqur qidiruv yakunlandi — AI xulosa chiqarishingiz mumkin.");
+    pushLog("sys", "Qo'shimcha qidiruvlar yakunlandi — AI xulosa chiqarishingiz mumkin.");
   };
 
   const continueAfterReview = () => {
@@ -636,23 +648,18 @@ export default function Home() {
       setStep("stopped");
       return;
     }
-    const picks = eng.pending
-      .filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`))
-      .sort((a, b) => PIVOT_PRIORITY[a.kind] - PIVOT_PRIORITY[b.kind])
-      .slice(0, AUTO_PER_SCAN);
-    for (const c of picks) {
-      eng.runSet.add(`${c.kind}:${c.value}`);
-      eng.queue.push({ kind: c.kind, value: c.value, depth: 1 });
-      pushLog("sys", `Navbat: "${c.value}" (${c.kind.toUpperCase()}) bo'yicha chuqur skaner`);
-    }
+    // Avtomatik qidiruv YO'Q: topilgan izlar panelda qoladi —
+    // qaysi biri bo'yicha qidirishni foydalanuvchi o'zi tanlaydi
     setPendingCandidates(eng.pending.filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`)));
-    if (eng.queue.length === 0) {
-      pushLog("info", "Yangi iz topilmadi — sessiya yakunlandi.");
-      setStep("done");
-      return;
-    }
-    setStep("pivots");
-    void processQueue();
+    setStep("done");
+    pushLog(
+      "sys",
+      "Skaner yakunlandi — topilgan telefon, email va boshqa ma'lumotlar «Topilgan qo'shimcha ma'lumotlar» panelida yig'ilgan."
+    );
+    pushLog(
+      "info",
+      "Qo'shimcha qidiruv faqat siz tanlagan ma'lumot bo'yicha boradi: panelda «Qidir» tugmasini bosing yoki yuqorida yangi maqsad kiriting."
+    );
   };
 
   // ===== Qo'lda pivot: "+" tugmasi yoki paneldagi Play =====
@@ -676,6 +683,7 @@ export default function Home() {
       return;
     }
     eng.runSet.add(pk);
+    setSearchedKeys((prev) => new Set(prev).add(pk));
     eng.queue.push({ kind: p.kind, value: p.value, depth: 1 });
     setPendingCandidates(eng.pending.filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`)));
     pushLog("info", `Qo'lda navbat: "${p.value}" (${p.kind.toUpperCase()}) bo'yicha chuqur skaner`);
@@ -683,6 +691,18 @@ export default function Home() {
       setStep("pivots");
       void processQueue();
     }
+  };
+
+  // ===== «Topilgan ma'lumotlar» panelidan qidiruv — FAQAT qo'lda =====
+  const runIntelSearch = (kind: TargetType, value: string) => {
+    if (step === "idle" || !target) {
+      // Faol sessiya yo'q — shu qiymat bilan yangi sessiya boshlaymiz
+      setType(kind);
+      setInput(value);
+      void startScan(kind, value);
+      return;
+    }
+    addPivotManual({ kind, value });
   };
 
   const stopAll = () => {
@@ -695,8 +715,9 @@ export default function Home() {
   };
 
   // ===== Asosiy oqim =====
-  const startScan = async () => {
-    const query = input.trim();
+  const startScan = async (ovType?: TargetType, ovQuery?: string) => {
+    const query = (ovQuery ?? input).trim();
+    const scanType = ovType ?? type;
     if (query.length < 2) {
       toast({
         title: "Maqsad juda qisqa",
@@ -713,13 +734,12 @@ export default function Home() {
     engineRef.current = {
       stopped: false,
       queue: [],
-      runSet: new Set([`${type}:${query.toLowerCase()}`]),
+      runSet: new Set([`${scanType}:${query.toLowerCase()}`]),
       pending: [],
       knownUrls: new Set<string>(),
       scansDone: 0,
       rootQuery: query,
-      rootType: type,
-      maxDepth: mode === "deep" ? MAX_DEPTH_DEEP : 1,
+      rootType: scanType,
     };
     resultsRef.current = new Map();
     verdictsRef.current = {};
@@ -734,23 +754,26 @@ export default function Home() {
     setPendingCandidates([]);
     setScansDone(0);
     setFocusIds([]);
+    intelRef.current = [];
+    setIntel([]);
+    setSearchedKeys(new Set([`${scanType}:${query.toLowerCase()}`]));
     setLogs([]);
     setModules([]);
     setAiText("");
     setAiStatus("idle");
     setElapsed(0);
     setProgress(null);
-    setTarget({ type, query });
-    saveRecent(type, query);
+    setTarget({ type: scanType, query });
+    saveRecent(scanType, query);
     setStep("global");
 
     pushLog(
       "sys",
-      `SESSIYA BOSHLANDI — rejim: ${mode === "deep" ? "CHUQUR (adaptiv + rekursiv)" : "TEZ"} · tezlik: ${SPEED_LEVELS.find((s) => s.val === speedRef.current)?.label ?? "Oddiy"}`
+      `SESSIYA BOSHLANDI — rejim: ${mode === "deep" ? "CHUQUR (adaptiv)" : "TEZ"} · tezlik: ${SPEED_LEVELS.find((s) => s.val === speedRef.current)?.label ?? "Oddiy"}`
     );
 
     // 1-BOSQICH: dunyo bo'ylab — barcha ochiq tarmoqlar
-    const r1 = await runScanTarget({ kind: type, value: query, depth: 0 }, "core");
+    const r1 = await runScanTarget({ kind: scanType, value: query, depth: 0 }, "core");
     let eng = engineRef.current;
     if (eng.stopped) {
       setStep("stopped");
@@ -772,7 +795,7 @@ export default function Home() {
           `2-BOSQICH — ko'p natija bergan manbalar: ${top.map(moduleTitleOf).join(", ")}`
         );
         setStep("focused");
-        const r2 = await runScanTarget({ kind: type, value: query, depth: 0 }, "deep-only", top);
+        const r2 = await runScanTarget({ kind: scanType, value: query, depth: 0 }, "deep-only", top);
         if (engineRef.current.stopped) {
           setStep("stopped");
           return;
@@ -988,13 +1011,14 @@ export default function Home() {
           {step === "idle" && (
             <div className="max-w-2xl mx-auto mb-6">
               <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">
-                Maqsadni kiriting — <span className="text-primary">qolganini tizim o&apos;zi bajaradi</span>
+                Maqsadni kiriting — <span className="text-primary">qaysi izni tekshirishni siz tanlaysiz</span>
               </h1>
               <p className="mt-3 text-muted-foreground text-sm sm:text-base leading-relaxed">
-                To&apos;liq avtomatlashtirilgan ochiq manbalar razvedkasi: dunyo
-                bo&apos;ylab barcha ochiq tarmoqlar skanerlanadi, eng unumli
-                manbalar chuqur tahlil qilinadi, AI natijalarni solishtiradi va
-                topilgan izlar bo&apos;yicha qidiruv o&apos;zi davom etadi.
+                Ochiq manbalar razvedkasi: dunyo bo&apos;ylab tarmoqlar
+                skanerlanadi va AI natijalarni solishtiradi. Topilgan telefon,
+                email, ism-familiya va boshqa ma&apos;lumotlar alohida
+                panelda to&apos;planadi — qaysi biri bo&apos;yicha chuqur
+                qidirishni siz tanlaysiz, tizim o&apos;zi qidirmaydi.
               </p>
             </div>
           )}
@@ -1038,7 +1062,7 @@ export default function Home() {
                   To&apos;xtatish
                 </Button>
               ) : (
-                <Button size="lg" onClick={startScan} className="gap-2 shrink-0">
+                <Button size="lg" onClick={() => startScan()} className="gap-2 shrink-0">
                   <ScanSearch className="w-4 h-4" />
                   Skanerlash
                 </Button>
@@ -1057,7 +1081,7 @@ export default function Home() {
                 }`}
                 aria-pressed={mode === "deep"}
               >
-                Chuqur + rekursiv (4 bosqich)
+                Chuqur taramok (AI solishtirish bilan)
               </button>
               <button
                 onClick={() => setMode("normal")}
@@ -1185,6 +1209,13 @@ export default function Home() {
                   )}
                 </Card>
               )}
+
+              <IntelPanel
+                entries={intel}
+                busy={busy}
+                searchedKeys={searchedKeys}
+                onSearch={runIntelSearch}
+              />
 
               <DeepPanel
                 mode={mode}

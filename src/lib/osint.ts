@@ -397,7 +397,8 @@ export const PLATFORM_DOMAINS = new Set([
   "wikipedia.org", "google.com", "yandex.com", "yandex.ru", "mail.ru",
   "pastebin.com", "scribd.com", "docs.google.com", "shodan.io", "censys.io",
   "crt.sh", "stackoverflow.com", "habr.com", "substack.com", "imgur.com",
-  "flickr.com", "zoomeye.com", "dailymail.co.uk",
+  "flickr.com", "zoomeye.com", "dailymail.co.uk", "gravatar.com",
+  "keybase.io", "steamcommunity.com",
 ]);
 
 /** Bepul pochta domeni — bundan "domen pivot" chiqarmaymiz */
@@ -407,11 +408,13 @@ export const FREEMAIL_DOMAINS = new Set([
   "yandex.com", "zoho.com", "gmx.com", "inbox.ru", "bk.ru", "list.ru",
 ]);
 
-const PROFILE_URL_SEGMENTS = new Set([
+export const PROFILE_URL_SEGMENTS = new Set([
   "p", "reel", "reels", "watch", "user", "users", "in", "pub", "company",
   "channel", "c", "hashtag", "status", "post", "question", "topics", "tag",
   "search", "profile", "u", "id", "share", "shares", "video", "photo",
-  "shorts", "playlist", "groups", "events", "comments",
+  "shorts", "playlist", "groups", "events", "comments", "photos", "videos",
+  "media", "tagged", "saved", "explore", "stories", "album", "albums",
+  "favorites", "followers", "following", "gists",
 ]);
 
 /** Qidiruv natijasi URL'ni yagona kalitga aylantirish (dedupe uchun) */

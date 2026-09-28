@@ -33,7 +33,7 @@ const STEP_LABELS: Record<string, string> = {
   global: "1-bosqich — Global taramok: barcha ochiq tarmoqlar",
   focused: "2-bosqich — Eng unumli manbalarga chuqur fokus",
   review: "3-qadam — AI natijalarni maqsad bilan solishtiradi",
-  pivots: "4-bosqich — Rekursiv pivot qidiruvi (topilgan ma'lumot bo'yicha)",
+  pivots: "4-bosqich — Qo'shimcha qidiruvlar: faqat siz tanlagan izlar bo'yicha",
 };
 
 const KIND_LABELS: Record<TargetType, string> = {
@@ -90,7 +90,7 @@ export function DeepPanel({
           variant="secondary"
           className={`ml-auto text-[10px] ${mode === "deep" ? "bg-primary/15 text-primary border border-primary/30" : ""}`}
         >
-          {mode === "deep" ? "CHUQUR + REKURSIV" : "TEZ"}
+          {mode === "deep" ? "CHUQUR" : "TEZ"}
         </Badge>
       </div>
 
@@ -176,7 +176,7 @@ export function DeepPanel({
         <div className="space-y-1.5">
           <p className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
             <Layers className="w-3.5 h-3.5" />
-            Topilgan yangi izlar ({pending.length}) — navbat
+            Topilgan izlar ({pending.length}) — «Qidir» bilan ishga tushiring
           </p>
           <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
             {pending.map((p) => (
@@ -209,7 +209,7 @@ export function DeepPanel({
         {step === "review" && (
           <Button size="sm" onClick={onContinue} className="gap-1.5 flex-1">
             <Globe2 className="w-3.5 h-3.5" />
-            Davom etish — chuqur qidiruv
+            Yakunlash — qo'shimcha qidiruv qo'lda
           </Button>
         )}
         {(busy || step === "review") && (
@@ -228,8 +228,8 @@ export function DeepPanel({
       {sessionOver && (
         <p className="text-[11px] text-muted-foreground leading-relaxed">
           {step === "stopped"
-            ? "Sessiya to'xtatildi. Natijalar kartalaridagi «+» tugmasi orqali istalgan izni davom ettirishingiz mumkin."
-            : "Sessiya yakunlandi. «+» tugmasi orqali istalgan topilma bo'yicha qidiruvni davom ettirishingiz mumkin."}
+            ? "Sessiya to'xtatildi. Natijalar kartalaridagi «+» tugmasi yoki «Topilgan qo'shimcha ma'lumotlar» paneli orqali istalgan izni davom ettirishingiz mumkin."
+            : "Sessiya yakunlandi. «+» tugmasi yoki «Topilgan qo'shimcha ma'lumotlar» panelidagi «Qidir» orqali siz tanlagan iz bo'yicha qidiruvni boshlashingiz mumkin."}
         </p>
       )}
     </Card>
