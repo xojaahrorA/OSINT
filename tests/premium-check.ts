@@ -23,7 +23,7 @@ const ok = (cond: boolean, label: string) => {
 };
 
 console.log("=== 1. Premium metalar ===");
-ok(PREMIUM_SOURCES.length === 9, `9 ta premium manba aniqlangan (${PREMIUM_SOURCES.length})`);
+ok(PREMIUM_SOURCES.length === 10, `10 ta premium manba aniqlangan (${PREMIUM_SOURCES.length})`);
 ok(
   PREMIUM_SOURCES.every((s) => s.envKey && s.getKeyUrl && s.what),
   "har bir meta envKey/getKeyUrl/what maydonlariga ega"
@@ -31,7 +31,7 @@ ok(
 
 console.log("=== 2. Kalit holati (env bo'sh — hammasi missing) ===");
 const missing = premiumMissing();
-ok(missing.length === 9, `kalitsizlar ro'yxati 9 ta (${missing.length})`);
+ok(missing.length === 10, `kalitsizlar ro'yxati 10 ta (${missing.length})`);
 ok(PREMIUM_SOURCES.every((s) => !premiumKeySet(s.id)), "env bo'sh — premiumKeySet false");
 
 console.log("=== 3. DIRECT_RUNS'ga ulanganligi ===");
@@ -46,6 +46,11 @@ const phoneIds = directSourceIdsFor("phone");
 ok(phoneIds.includes("numlookup"), "phone: numlookup bor");
 const ipIds = directSourceIdsFor("ip");
 ok(ipIds.includes("ipinfo") && ipIds.includes("shodan"), "ip: ipinfo + shodan bor");
+const unIds = directSourceIdsFor("username");
+ok(
+  ["telegram", "telegram-feed", "telegram-bot"].every((x) => unIds.includes(x)),
+  "username: telegram modullari ro'yxatda"
+);
 for (const t of ["username", "email", "phone", "name", "domain", "ip"] as const) {
   const ids = directSourceIdsFor(t);
   ok(
@@ -83,6 +88,17 @@ ok(
   noKeyResults.every((r) => Array.isArray(r) && r.length === 0),
   "kalit yo'qida hammasi bo'sh ro'yxat qaytardi (skaner to'xtamaydi)"
 );
+
+console.log("=== 7. Telegram modullari ===");
+ok(typeof DIRECT_RUNS.telegram === "function", "DIRECT_RUNS.telegram funksiya");
+ok(typeof DIRECT_RUNS["telegram-feed"] === "function", "DIRECT_RUNS['telegram-feed'] funksiya");
+ok(typeof DIRECT_RUNS["telegram-bot"] === "function", "DIRECT_RUNS['telegram-bot'] funksiya");
+const tgSearch = OSINT_MODULES.find((m) => m.id === "telegram-search");
+ok(!!tgSearch, "telegram-search moduli mavjud");
+ok(tgSearch?.queries("durov")[0]?.includes("site:t.me") ?? false, "telegram-search: site:t.me so'rovi");
+// kalit yo'qida telegram-bot bo'sh ro'yxat qaytaradi (xato tashlamaydi)
+const tgNoKey = await DIRECT_RUNS["telegram-bot"]("durov");
+ok(Array.isArray(tgNoKey) && tgNoKey.length === 0, "telegram-bot: kalit yo'q — bo'sh ro'yxat");
 
 // Faqat CSE — ikkala kalit kerakligi alohida test
 process.env.GOOGLE_CSE_KEY = "fake";

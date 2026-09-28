@@ -45,6 +45,9 @@ import {
   PhoneCall,
   MapPin,
   Smartphone,
+  Send,
+  Rss,
+  MessageCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -117,6 +120,11 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "username-probe": UserCheck,
   "phone-meta": Phone,
   "wiki-people": BookOpen,
+  // Telegram — Instant Messaging manbalari
+  telegram: Send,
+  "telegram-feed": Rss,
+  "telegram-bot": Bot,
+  "telegram-search": MessageCircle,
   // Premium (API kalitli) manbalar
   serper: SearchCheck,
   "brave-api": Flame,

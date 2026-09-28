@@ -13,6 +13,11 @@ import type { SearchResultItem, TargetType } from "@/lib/osint";
 import { FREEMAIL_DOMAINS, PLATFORM_DOMAINS } from "@/lib/osint";
 import { scanWhatsMyName, type WmnProgressCb } from "@/lib/whatsmyname";
 import { PREMIUM_RUNS } from "@/lib/premium-sources";
+import {
+  telegramProfileSource,
+  telegramFeedSource,
+  telegramBotApiSource,
+} from "@/lib/telegram";
 
 // ===== Yordamchilar =====
 
@@ -1359,6 +1364,10 @@ export const DIRECT_RUNS: Record<
   "username-probe": usernameProbeSource,
   "phone-meta": phoneMetaSource,
   "wiki-people": wikiPeopleSource,
+  // Telegram — Instant Messaging manbalari (API kaliti shart emas, Bot API kalitli)
+  telegram: telegramProfileSource,
+  "telegram-feed": telegramFeedSource,
+  "telegram-bot": telegramBotApiSource,
   // Premium (API kalitli) manbalar — .env'dagi kalitlar bilan faollashadi
   ...PREMIUM_RUNS,
 };
@@ -1374,7 +1383,7 @@ export function directSourceIdsFor(type: TargetType): string[] {
       : type === "email"
         ? ["breaches", "gravatar", "mailbox", "corp-domain", "github-email", "hibp", "hunter", ...PREMIUM_SEARCH_IDS]
         : type === "username"
-          ? ["whatsmyname", "username-probe", ...PREMIUM_SEARCH_IDS]
+          ? ["whatsmyname", "username-probe", "telegram", "telegram-feed", "telegram-bot", ...PREMIUM_SEARCH_IDS]
           : type === "phone"
             ? ["phone-meta", "numlookup", ...PREMIUM_SEARCH_IDS]
             : type === "name"

@@ -149,6 +149,15 @@ export const PREMIUM_SOURCES: PremiumMeta[] = [
     getKeyUrl: "https://ipinfo.io/signup",
     free: "Oyiga 50 000 so'rov bepul",
   },
+  {
+    id: "telegram-bot",
+    title: "Telegram Bot API",
+    envKey: "TELEGRAM_BOT_TOKEN",
+    appliesTo: ["username"],
+    what: "Telegram'ning rasmiy API'si: profil/kanal ANIQ ma'lumoti — chat id, turi, bio, obunachilar soni (getChat + getChatMemberCount)",
+    getKeyUrl: "https://t.me/BotFather",
+    free: "Mutlaqo bepul — @BotFather'da bot yarating (/newbot), tokenni shu yerga yozing",
+  },
 ];
 
 export function premiumKeySet(id: string): boolean {

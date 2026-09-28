@@ -114,8 +114,22 @@ HTML dvigatellar ba'zan bloklanadi (403/429/captcha) — bu ularning bot-himoyas
 | `SHODAN_API_KEY` | [account.shodan.io](https://account.shodan.io/register) | Ochiq portlar, servis bannerlari, tarix | bepul hisob |
 | `NUMLOOKUP_API_KEY` | [numlookupapi.com](https://app.numlookupapi.com/register) | Telefon holati, operator, liniya turi | kuniga 100 |
 | `IPINFO_TOKEN` | [ipinfo.io](https://ipinfo.io/signup) | Aniq IP geo/ASN, VPN/proxy aniqlash | oyiga 50 000 |
+| `TELEGRAM_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) | Telegram rasmiy API: chat id, turi, bio, obunachilar soni — **mutlaqo bepul** | cheklanmagan |
 
 Kalitli dvigatellarning katta afzalligi: **403/429/captcha umuman bo'lmaydi** — shuning uchun ochiq dvigatellar doim bloklanib turadigan tarmoqlarda aynan ular asosiy kuch bo'ladi. Diagnostika tugmasi qaysi kalitlar faol ekanini ko'rsatadi.
+
+### Telegram qidiruvi (api kaliti shart emas)
+
+Oddiy qidiruv tizimlari t.me ichidagi kontentni deyarli indekslamaydi — shuning uchun Telegram'dan TO'G'RIDAN-TO'G'RI o'qiydigan 4 ta modul bor:
+
+| Modul | Nima qiladi | Qanday ishlaydi |
+|---|---|---|
+| **Telegram profili** | Profil/kanal/bot mavjudligi, turi (kanal/guruh/bot/shaxs), ism, tavsif, avatar, obunachilar soni | `t.me/<username>` ochiq sahifasi — bepul, kalit yo'q |
+| **Telegram posti (ochiq kanal)** | Ochiq kanalning so'nggi 10 posti: sana, ko'rishlar, matn; post ichidagi email/telefon intel paneliga tushadi | `t.me/s/<kanal>` web preview — bepul |
+| **Telegram Bot API** | Rasmiy API'dan ANIQ javob: chat id, turi, bio, aynan obunachilar raqami | `TELEGRAM_BOT_TOKEN` kerak — [@BotFather](https://t.me/BotFather)'da /newbot (mutlaqo bepul) |
+| **Telegram izlari** (barcha maqsad turlari) | `site:t.me`, telegra.ph, tgstat/telemetr domeni bo'yicha maxsus so'rovlar | Qidiruv dvigatellari zanjiri |
+
+Telefon raqam bo'yicha Telegram'ni passiv tekshirish imkoni yo'q (Telegram shaxsiy raqamlarni yashiradi) — telefon uchun «Telegram izlari» va «Telefon izlari» modullari ishlaydi.
 
 ### Telefon va ism qidiruvini yaxshilash
 

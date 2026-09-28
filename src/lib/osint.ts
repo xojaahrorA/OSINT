@@ -172,6 +172,31 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
     description: "Mashhur shaxslar haqida ma'lumotnoma — bio, kasb, sanalar (DuckDuckGo Knowledge Graph)",
     appliesTo: ["name"],
   },
+  // ---- Telegram: OSINT Framework "Instant Messaging" bo'limi ----
+  {
+    id: "telegram",
+    title: "Telegram profili",
+    icon: "Send",
+    description:
+      "t.me'da profil/kanal/bot mavjudligi, turi (kanal/guruh/bot/shaxs), ismi, tavsif, avatar va obunachilar soni",
+    appliesTo: ["username"],
+  },
+  {
+    id: "telegram-feed",
+    title: "Telegram posti (ochiq kanal)",
+    icon: "Rss",
+    description:
+      "Ochiq kanalning so'nggi posti (t.me/s) — sana, ko'rishlar, post matni; kontaktlar intel paneliga yig'iladi",
+    appliesTo: ["username"],
+  },
+  {
+    id: "telegram-bot",
+    title: "Telegram Bot API",
+    icon: "Bot",
+    description:
+      "Rasmiy API'dan ANIQ javob: chat id, turi, bio, a'zolar soni. Token: @BotFather (mutlaqo bepul)",
+    appliesTo: ["username"],
+  },
   // ---- Premium (API kalitli) manbalar — .env ga kalit yozilsa faollashadi ----
   {
     id: "serper",
@@ -337,6 +362,24 @@ export const OSINT_MODULES: OsintModuleDef[] = [
       `site:t.me OR site:telegram.me ${q(t)}`,
       `site:github.com OR site:gitlab.com ${q(t)}`,
       `site:vk.com OR site:ok.ru OR site:pinterest.com ${q(t)}`,
+    ],
+    num: 6,
+  },
+  {
+    id: "telegram-search",
+    title: "Telegram izlari",
+    icon: "MessageCircle",
+    description:
+      "t.me, telegram.me va telegra.ph domeni bo'ylab maxsus qidiruv — kanal, guruh, profil va postlar",
+    appliesTo: ALL,
+    queries: (t) => [
+      `site:t.me ${q(t)}`,
+      `${q(t)} (telegram OR "t.me") (kanal OR guruh OR chat OR profil OR a'zo)`,
+    ],
+    deepQueries: (t) => [
+      `(site:t.me OR site:telegram.me OR site:telegra.ph) ${q(t)}`,
+      `${q(t)} ("t.me/s/" OR "t.me/joinchat" OR "t.me/+")`,
+      `${q(t)} (tgstat OR telemetr OR lyzem OR telegra.ph)`,
     ],
     num: 6,
   },
