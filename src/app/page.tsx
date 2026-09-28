@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -64,6 +65,7 @@ import {
 import {
   OSINT_MODULES,
   TARGET_TYPES,
+  detectTargetType,
   extractPivots,
   normalizeUrl,
   anyModuleTitle,
@@ -119,7 +121,14 @@ const EXAMPLES: { type: TargetType; query: string }[] = [
 // Skaner chegaralari — rate-limit va beqarorlikka qarshi himoya.
 // Qo'shimcha qidiruvlar FAQAT foydalanuvchi tanlagan izlar bo'yicha ishlaydi —
 // tizim topgan ma'lumot bo'yicha o'zi qidiruv ishga tushirmaydi.
-const MAX_SCANS = 8; // bitta sessiyada eng ko'pi bilan 8 skaner
+const MAX_SCANS = 12; // bitta sessiyada eng ko'pi bilan 12 skaner (ko'p maqsadli batch bilan)
+
+// Parallel ishchilar — navbatdagi so'rovlarni bir vaqtda bajaradigan skanerlar.
+// Queue + worker pool arxitekturasi: so'rovlar navbatga tushadi, N ta ishchi
+// bir vaqtda oladi va bajaradi (controlled concurrency).
+const PARALLEL_LEVELS = [1, 2, 3, 4] as const;
+type ParallelLevel = (typeof PARALLEL_LEVELS)[number];
+const PARALLEL_STAGGER_MS = 1200; // har ishchi orasidagi start farqi — dvigatelga bir vaqtda bosilmasin
 
 // Tezlik darajalari — UI'dagi "Tezlik" boshqaruvi (localStorage: osint-speed).
 // Scan API'ga speed parametri sifatida uzatiladi — server pauzalarni shunga
@@ -173,6 +182,13 @@ interface PivotJob {
   depth: number;
 }
 
+/** Batch (ko'p maqsadli) navbat holati — «Navbat: X/Y · N parallel» ko'rsatkichi */
+interface BatchInfo {
+  done: number;
+  total: number;
+  active: number;
+}
+
 const STEP_BADGES: Record<DeepStep, string> = {
   idle: "",
   global: "1-bosqich · global taramok",
@@ -221,7 +237,42 @@ export default function Home() {
       /* noop */
     }
   };
-   const [step, setStep] = useState<DeepStep>("idle");
+
+  // Parallel ishchilar darajasi — navbatdagi so'rovlarni nechta bir vaqtda bajaradi
+  // (localStorage: osint-parallel). 1 = ketma-ket, 4 = maksimal tezlik.
+  const [parallel, setParallel] = useState<ParallelLevel>(3);
+  const parallelRef = useRef<ParallelLevel>(3);
+  useEffect(() => {
+    try {
+      const p = localStorage.getItem("osint-parallel");
+      const n = Number(p);
+      if (PARALLEL_LEVELS.includes(n as ParallelLevel)) {
+        setParallel(n as ParallelLevel);
+        parallelRef.current = n as ParallelLevel;
+      }
+    } catch {
+      /* noop */
+    }
+  }, []);
+  const changeParallel = (n: ParallelLevel) => {
+    setParallel(n);
+    parallelRef.current = n;
+    try {
+      localStorage.setItem("osint-parallel", String(n));
+    } catch {
+      /* noop */
+    }
+  };
+
+  // Ko'p maqsadli rejim — textarea'da har qator bitta maqsad, turlari avtomatik
+  const [multiMode, setMultiMode] = useState(false);
+
+  // Batch navbat holati — «Navbat: X/Y · N parallel» indikatori
+  const [batchInfo, setBatchInfo] = useState<BatchInfo | null>(null);
+  // Ko'p maqsadli sessiya so'rovlari — Maqsad kartasida ro'yxat ko'rsatish uchun
+  const [batchQueries, setBatchQueries] = useState<string[]>([]);
+
+  const [step, setStep] = useState<DeepStep>("idle");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [modules, setModules] = useState<ModuleResult[]>([]);
   const [activeTab, setActiveTab] = useState<string>("");
@@ -256,7 +307,9 @@ export default function Home() {
   const intelRef = useRef<IntelEntry[]>([]);
   const [searchedKeys, setSearchedKeys] = useState<Set<string>>(new Set());
 
-  const scanAbortRef = useRef<AbortController | null>(null);
+  const scanAbortsRef = useRef<Set<AbortController>>(new Set());
+  // Parallel ishlayotgan skanerlar yorliqlari — «Skanerlanmoqda: A · B · C»
+  const runningLabelsRef = useRef<Set<string>>(new Set());
   const aiAbortRef = useRef<AbortController | null>(null);
   const startedAtRef = useRef(0);
   const touchedTabRef = useRef(false);
@@ -273,6 +326,9 @@ export default function Home() {
     scansDone: 0,
     rootQuery: "",
     rootType: "username" as TargetType,
+    // Intel ajratishda hisobga olinmaydigan so'rovlar — batch sessiyada barcha
+    // foydalanuvchi kiritgan maqsadlar (o'zi topilgan ism qayta chiqmasligi uchun)
+    batchQueries: [] as string[],
   });
   const resultsRef = useRef<Map<string, { item: SearchResultItem; moduleTitle: string }>>(new Map());
   const verdictsRef = useRef<Record<string, VerdictInfo>>({});
@@ -339,6 +395,8 @@ export default function Home() {
   };
 
   // ===== Bitta skaner (NDJSON oqim) — natijalarni modullar bilan birlashtiradi =====
+  // Parallel ishchilar ham shu funksiyani chaqiradi: har skaner oqimi mustaqil,
+  // abortlar to'plamda saqlanadi, yorliqlar "A · B · C" ko'rinishida birlashadi.
   const runScanTarget = async (
     job: PivotJob,
     querySet: "core" | "deep-only" | "extended",
@@ -346,9 +404,10 @@ export default function Home() {
   ): Promise<NewResult[]> => {
     const eng = engineRef.current;
     const ctrl = new AbortController();
-    scanAbortRef.current = ctrl;
-    startedAtRef.current = Date.now();
-    setActiveLabel(job.value);
+    scanAbortsRef.current.add(ctrl);
+    runningLabelsRef.current.add(job.value);
+    if (runningLabelsRef.current.size === 1) startedAtRef.current = Date.now();
+    setActiveLabel([...runningLabelsRef.current].join(" · "));
     setProgress(null);
 
     const scanNo = eng.scansDone + 1;
@@ -486,12 +545,18 @@ export default function Home() {
           variant: "destructive",
         });
       }
+    } finally {
+      scanAbortsRef.current.delete(ctrl);
+      runningLabelsRef.current.delete(job.value);
+      if (runningLabelsRef.current.size === 0) setActiveLabel(null);
+      else setActiveLabel([...runningLabelsRef.current].join(" · "));
     }
 
     // Topilgan qo'shimcha ma'lumotlarni alohida panelga yig'amiz —
     // tizim o'zi qidirmaydi, faqat foydalanuvchi tanlagani qidiriladi
     if (intelBatch.length > 0) {
-      const add = extractIntelBatch(intelBatch, [eng.rootQuery]);
+      const exclude = eng.batchQueries.length > 0 ? eng.batchQueries : [eng.rootQuery];
+      const add = extractIntelBatch(intelBatch, exclude);
       const merged = mergeIntel(intelRef.current, add);
       intelRef.current = merged;
       setIntel(merged);
@@ -618,28 +683,79 @@ export default function Home() {
     setReviewEntries(buildReviewEntries());
   };
 
-  // ===== Rekursiv navbat protsessori — pivot skanerlarni ketma-ket ishga tushiradi =====
-  const processQueue = async () => {
+  // ===== Navbat protsessori — worker-pool arxitekturasi =====
+  // Navbatdagi so'rovlarni N ta parallel ishchi bo'lib bajaradi (controlled
+  // concurrency): har ishchi navbatdan keyingi vazifani oladi, tugatgach
+  // yana oladi — navbat bo'saguncha. Ishchilar STAGGER oraliqda start oladi —
+  // qidiruv dvigatellariga bir vaqtda "gulda" bosilmasin (429 himoyasi).
+  // Retry/backoff server tomonda bor (429/403 retry, adaptiv sovitish).
+  const processQueue = async (querySet: "core" | "extended" = "extended", withVerdict = true) => {
     if (processingRef.current) return;
     processingRef.current = true;
     const eng = engineRef.current;
-    try {
-      while (!eng.stopped && eng.queue.length > 0 && eng.scansDone < MAX_SCANS) {
-        const job = eng.queue.shift()!;
-        const newResults = await runScanTarget(job, "extended");
-        if (eng.stopped) break;
-        harvestPivots(newResults);
+    let done = 0;
+    const totalInitial = eng.queue.length;
+    if (totalInitial > 1) setBatchInfo({ done: 0, total: totalInitial, active: 0 });
+
+    const worker = async (wIdx: number) => {
+      if (wIdx > 0) {
+        await new Promise((r) => setTimeout(r, wIdx * PARALLEL_STAGGER_MS));
       }
+      while (!eng.stopped && eng.queue.length > 0 && eng.scansDone < MAX_SCANS) {
+        const job = eng.queue.shift();
+        if (!job) break;
+        setBatchInfo((b) =>
+          b ? { ...b, active: runningLabelsRef.current.size } : b
+        );
+        try {
+          const newResults = await runScanTarget(job, querySet);
+          if (eng.stopped) break;
+          harvestPivots(newResults);
+        } finally {
+          done++;
+          setBatchInfo((b) =>
+            b
+              ? {
+                  done,
+                  total: Math.max(b.total, done + eng.queue.length),
+                  active: runningLabelsRef.current.size,
+                }
+              : b
+          );
+        }
+      }
+    };
+
+    const n = Math.max(
+      1,
+      Math.min(parallelRef.current, eng.queue.length || 1, MAX_SCANS - eng.scansDone)
+    );
+    if (n > 1 && eng.queue.length > 0) {
+      pushLog(
+        "sys",
+        `${n} ta skaner parallel ishga tushdi — navbatda ${eng.queue.length} ta so'rov (har ishchi ${(PARALLEL_STAGGER_MS / 1000).toFixed(1)}s oraliqda start oladi)`
+      );
+    }
+    try {
+      await Promise.all(Array.from({ length: n }, (_, i) => worker(i)));
     } finally {
       processingRef.current = false;
+      setBatchInfo(null);
     }
     if (engineRef.current.stopped) {
       setStep("stopped");
       return;
     }
-    await finalVerdictPass();
+    if (withVerdict) {
+      await finalVerdictPass();
+    }
     setStep("done");
-    pushLog("sys", "Qo'shimcha qidiruvlar yakunlandi — AI xulosa chiqarishingiz mumkin.");
+    pushLog(
+      "sys",
+      withVerdict
+        ? "Qo'shimcha qidiruvlar yakunlandi — AI xulosa chiqarishingiz mumkin."
+        : `Navbat yakunlandi (${done}/${totalInitial}) — «Topilgan qo'shimcha ma'lumotlar» paneldan davom etishingiz mumkin.`
+    );
   };
 
   const continueAfterReview = () => {
@@ -705,19 +821,174 @@ export default function Home() {
     addPivotManual({ kind, value });
   };
 
+  // ===== «Barchasini qidirish» — barcha tekshirilmagan izlar BIRGA navbatga =====
+  // Foydalanuvchi ism-familiya bo'yicha qidirib, telefon/email chiqib qolsa —
+  // hammasini bir vaqtda parallel ishchilar bilan tekshiradi.
+  const runIntelSearchAll = () => {
+    const eng = engineRef.current;
+    if (step === "idle" || !target) {
+      toast({
+        title: "Avval sessiya boshlang",
+        description: "Barchasini birga qidirish faol skaner sessiyasida ishlaydi.",
+      });
+      return;
+    }
+    const pendingList = intelRef.current.filter((e) => !eng.runSet.has(`${e.kind}:${e.value}`));
+    if (pendingList.length === 0) {
+      toast({ title: "Hammasi tekshirilgan", description: "Panelda yangi iz qolmadi." });
+      return;
+    }
+    const cap = MAX_SCANS - eng.scansDone;
+    if (cap <= 0) {
+      toast({
+        title: "Skaner limitiga yetildi",
+        description: `Bitta sessiyada eng ko'pi bilan ${MAX_SCANS} ta skaner bajariladi.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    const take = pendingList.slice(0, cap);
+    for (const e of take) {
+      eng.runSet.add(`${e.kind}:${e.value}`);
+      eng.queue.push({ kind: e.kind, value: e.value, depth: 1 });
+    }
+    setSearchedKeys((prev) => new Set([...prev, ...take.map((e) => `${e.kind}:${e.value}`)]));
+    setPendingCandidates(eng.pending.filter((c) => !eng.runSet.has(`${c.kind}:${c.value}`)));
+    pushLog(
+      "info",
+      `«Barchasini qidirish»: ${take.length} ta iz navbatga qo'yildi${pendingList.length > take.length ? ` (limit tufayli ${pendingList.length - take.length} tasi keyingi navbatga qoldi)` : ""} — ${parallelRef.current} ta parallel ishchi bajaradi`
+    );
+    setStep("pivots");
+    if (!processingRef.current) {
+      void processQueue();
+    }
+  };
+
+  const abortAllScans = () => {
+    for (const ctrl of scanAbortsRef.current) {
+      try {
+        ctrl.abort();
+      } catch {
+        /* noop */
+      }
+    }
+    scanAbortsRef.current.clear();
+    runningLabelsRef.current.clear();
+  };
+
   const stopAll = () => {
     const eng = engineRef.current;
     eng.stopped = true;
     eng.queue = [];
-    scanAbortRef.current?.abort();
+    // Barcha parallel skaner oqimlarini to'xtatamiz
+    abortAllScans();
+    setActiveLabel(null);
+    setBatchInfo(null);
     setStep("stopped");
     pushLog("warn", "Foydalanuvchi sessiyani to'xtatdi.");
   };
 
+  // ===== Ko'p maqsadli (batch) sessiya — har so'rov navbatga, worker-pool bajaradi =====
+  // Bitta turgan joyda bir nechta buyruq: ism-familiya, telefon, email — aralash
+  // kiritiladi, turlari avtomatik aniqlanadi, barchasi parallel skanerlanadi.
+  const startBatchScan = async (queries: string[]) => {
+    aiAbortRef.current?.abort();
+    abortAllScans();
+    processingRef.current = false;
+
+    const rootQuery = queries[0];
+    const rootType = detectTargetType(rootQuery);
+
+    engineRef.current = {
+      stopped: false,
+      queue: [],
+      runSet: new Set<string>(),
+      pending: [],
+      knownUrls: new Set<string>(),
+      scansDone: 0,
+      rootQuery,
+      rootType,
+      batchQueries: queries,
+    };
+    const eng = engineRef.current;
+    for (const q of queries) {
+      const kind = detectTargetType(q);
+      eng.runSet.add(`${kind}:${q.toLowerCase()}`);
+      eng.queue.push({ kind, value: q, depth: 0 });
+    }
+
+    resultsRef.current = new Map();
+    verdictsRef.current = {};
+    skippedRef.current = new Set();
+    statsRef.current = {};
+    touchedTabRef.current = false;
+    logIdRef.current = 0;
+
+    setVerdicts({});
+    setSkipped(new Set());
+    setReviewEntries([]);
+    setPendingCandidates([]);
+    setScansDone(0);
+    setFocusIds([]);
+    intelRef.current = [];
+    setIntel([]);
+    setSearchedKeys(new Set(eng.runSet));
+    setLogs([]);
+    setModules([]);
+    setAiText("");
+    setAiStatus("idle");
+    setElapsed(0);
+    setProgress(null);
+    setTarget({ type: rootType, query: rootQuery });
+    setBatchQueries(queries);
+    saveRecent(rootType, rootQuery);
+    setStep("global");
+
+    pushLog(
+      "sys",
+      `KO'P MAQSADLI SESSIYA — ${queries.length} ta so'rov navbatga qo'yildi · ${parallelRef.current} ta parallel ishchi · tezlik: ${SPEED_LEVELS.find((s) => s.val === speedRef.current)?.label ?? "Oddiy"}`
+    );
+    for (const job of eng.queue) {
+      pushLog("info", `Navbatga qo'shildi: [${job.kind.toUpperCase()}] ${job.value}`);
+    }
+
+    // Barcha so'rovlar "core" to'plam bilan parallel bajariladi — tezlik ustuvor
+    await processQueue("core", false);
+  };
+
   // ===== Asosiy oqim =====
   const startScan = async (ovType?: TargetType, ovQuery?: string) => {
-    const query = (ovQuery ?? input).trim();
-    const scanType = ovType ?? type;
+    const raw = (ovQuery ?? input).trim();
+
+    // KO'P MAQSADLI REJIM — textarea'da har qator bitta maqsad
+    // (vergul / nuqtali vergul bilan ajratilganlar ham bo'linadi)
+    if (multiMode && !ovQuery) {
+      const seenQ = new Set<string>();
+      const parts = raw
+        .split(/\r?\n|[,;]/)
+        .map((s) => s.trim())
+        .filter((s) => s.length >= 2)
+        .filter((s) => {
+          const k = s.toLowerCase();
+          if (seenQ.has(k)) return false;
+          seenQ.add(k);
+          return true;
+        });
+      if (parts.length > 1) {
+        if (parts.length > MAX_SCANS) {
+          toast({
+            title: "Navbat limiti",
+            description: `Bir sessiyada eng ko'pi bilan ${MAX_SCANS} ta so'rov — birinchisi qabul qilindi.`,
+          });
+        }
+        await startBatchScan(parts.slice(0, MAX_SCANS));
+        return;
+      }
+    }
+
+    const query = raw;
+    const scanType =
+      ovType ?? (multiMode ? detectTargetType(query) : type);
     if (query.length < 2) {
       toast({
         title: "Maqsad juda qisqa",
@@ -728,7 +999,7 @@ export default function Home() {
     }
 
     aiAbortRef.current?.abort();
-    scanAbortRef.current?.abort();
+    abortAllScans();
     processingRef.current = false;
 
     engineRef.current = {
@@ -740,6 +1011,7 @@ export default function Home() {
       scansDone: 0,
       rootQuery: query,
       rootType: scanType,
+      batchQueries: [query],
     };
     resultsRef.current = new Map();
     verdictsRef.current = {};
@@ -764,6 +1036,7 @@ export default function Home() {
     setElapsed(0);
     setProgress(null);
     setTarget({ type: scanType, query });
+    setBatchQueries([]);
     saveRecent(scanType, query);
     setStep("global");
 
@@ -1024,33 +1297,52 @@ export default function Home() {
           )}
 
           <Card className="p-4 sm:p-5 max-w-3xl mx-auto">
-            <div className="flex flex-wrap gap-1.5 justify-center">
-              {TARGET_TYPES.map((t) => (
-                <button
-                  key={t.value}
-                  onClick={() => setType(t.value)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                    type === t.value
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-secondary/50 text-muted-foreground border-transparent hover:border-primary/30"
-                  }`}
-                  aria-pressed={type === t.value}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
+            {!multiMode && (
+              <div className="flex flex-wrap gap-1.5 justify-center">
+                {TARGET_TYPES.map((t) => (
+                  <button
+                    key={t.value}
+                    onClick={() => setType(t.value)}
+                    className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                      type === t.value
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-secondary/50 text-muted-foreground border-transparent hover:border-primary/30"
+                    }`}
+                    aria-pressed={type === t.value}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex gap-2 mt-3">
-              <Input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && !busy && startScan()}
-                placeholder={`${currentTypeLabel} kiriting — masalan: ${
-                  TARGET_TYPES.find((t) => t.value === type)?.example
-                }`}
-                className="h-11 text-base"
-                aria-label="Maqsad kiritish"
-              />
+              {multiMode ? (
+                <Textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !busy) {
+                      e.preventDefault();
+                      void startScan();
+                    }
+                  }}
+                  rows={4}
+                  placeholder={"Har qatorda bitta maqsad — tur avtomatik aniqlanadi:\nMuhammad Karimov\n+998901234567\ninfo@example.com"}
+                  className="min-h-[104px] text-base font-mono text-sm"
+                  aria-label="Ko'p maqsadli kiritish"
+                />
+              ) : (
+                <Input
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && !busy && startScan()}
+                  placeholder={`${currentTypeLabel} kiriting — masalan: ${
+                    TARGET_TYPES.find((t) => t.value === type)?.example
+                  }`}
+                  className="h-11 text-base"
+                  aria-label="Maqsad kiritish"
+                />
+              )}
               {busy ? (
                 <Button
                   size="lg"
@@ -1095,6 +1387,23 @@ export default function Home() {
                 <Zap className="inline w-3 h-3 mr-1 -mt-0.5" />
                 Tez skaner
               </button>
+              <span className="mx-1 hidden sm:inline text-border">|</span>
+              <button
+                onClick={() => {
+                  setMultiMode((m) => !m);
+                  setInput("");
+                }}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                  multiMode
+                    ? "bg-primary/15 text-primary border-primary/40"
+                    : "bg-secondary/50 text-muted-foreground border-transparent hover:border-primary/30"
+                }`}
+                aria-pressed={multiMode}
+                title="Bir vaqtda bir nechta so'rov — har qator bitta maqsad, hammasi parallel skanerlanadi"
+              >
+                <Layers className="inline w-3 h-3 mr-1 -mt-0.5" />
+                Ko&apos;p maqsadli
+              </button>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-2 mt-2">
               <span className="text-[11px] text-muted-foreground mr-1 flex items-center gap-1">
@@ -1118,6 +1427,29 @@ export default function Home() {
               ))}
               <span className="text-[10px] text-muted-foreground/70 ml-1">
                 {SPEED_LEVELS.find((s) => s.val === speed)?.hint}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2 mt-2">
+              <span className="text-[11px] text-muted-foreground mr-1 flex items-center gap-1">
+                <Rocket className="w-3 h-3" /> Parallel:
+              </span>
+              {PARALLEL_LEVELS.map((n) => (
+                <button
+                  key={n}
+                  onClick={() => changeParallel(n)}
+                  title={`${n} ta skaner bir vaqtda ishlaydi`}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors tabular-nums ${
+                    parallel === n
+                      ? "bg-primary/15 text-primary border-primary/40"
+                      : "bg-secondary/50 text-muted-foreground border-transparent hover:border-primary/30"
+                  }`}
+                  aria-pressed={parallel === n}
+                >
+                  ×{n}
+                </button>
+              ))}
+              <span className="text-[10px] text-muted-foreground/70 ml-1">
+                navbatdagi so&apos;rovlar shuncha skaner bilan bir vaqtda bajariladi
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-1.5 mt-3 justify-center">
@@ -1166,10 +1498,36 @@ export default function Home() {
             <div className="lg:col-span-2 space-y-4">
               {target && (
                 <Card className="p-4">
-                  <div className="flex items-center gap-2 text-sm font-medium">
-                    <Target className="w-4 h-4 text-primary" />
-                    Maqsad: <span className="text-primary break-all">{target.query}</span>
-                  </div>
+                  {batchQueries.length > 1 ? (
+                    <>
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <Target className="w-4 h-4 text-primary" />
+                        Maqsadlar:
+                        <Badge
+                          variant="secondary"
+                          className="bg-primary/15 text-primary border border-primary/30 text-[10px] tabular-nums"
+                        >
+                          {batchQueries.length} ta so&apos;rov
+                        </Badge>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {batchQueries.map((q) => (
+                          <Badge
+                            key={q}
+                            variant="secondary"
+                            className="max-w-full text-[10px] font-mono bg-secondary/50 border border-transparent truncate"
+                          >
+                            {q}
+                          </Badge>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <Target className="w-4 h-4 text-primary" />
+                      Maqsad: <span className="text-primary break-all">{target.query}</span>
+                    </div>
+                  )}
                   <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-muted-foreground items-center">
                     <span className="flex items-center gap-1">
                       <GraduationCap className="w-3.5 h-3.5" />
@@ -1191,7 +1549,25 @@ export default function Home() {
                       </Badge>
                     )}
                   </div>
-                  {busy && progress && (
+                  {/* Batch navbat progressi — «Navbat: X/Y · N parallel» */}
+                  {busy && batchInfo && batchInfo.total > 1 && (
+                    <div className="mt-3">
+                      <div className="flex justify-between text-[11px] text-muted-foreground mb-1">
+                        <span className="truncate max-w-[220px]">
+                          Skanerlanmoqda: {activeLabel ?? "navbatdagi so&apos;rovlar"}
+                        </span>
+                        <span className="tabular-nums shrink-0 ml-2">
+                          navbat: {batchInfo.done}/{batchInfo.total} · {batchInfo.active} parallel
+                        </span>
+                      </div>
+                      <Progress
+                        value={batchInfo.total ? (batchInfo.done / batchInfo.total) * 100 : 0}
+                        className="h-1.5"
+                      />
+                    </div>
+                  )}
+                  {/* Bitta skaner progressi — faqat navbat rejimida emas */}
+                  {busy && (!batchInfo || batchInfo.total <= 1) && progress && (
                     <div className="mt-3">
                       <div className="flex justify-between text-[11px] text-muted-foreground mb-1">
                         <span className="truncate max-w-[200px]">
@@ -1215,6 +1591,8 @@ export default function Home() {
                 busy={busy}
                 searchedKeys={searchedKeys}
                 onSearch={runIntelSearch}
+                onSearchAll={runIntelSearchAll}
+                searchAllCap={MAX_SCANS - scansDone}
               />
 
               <DeepPanel

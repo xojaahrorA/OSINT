@@ -13,6 +13,7 @@ import {
   Copy,
   Database,
   Globe,
+  ListChecks,
   Mail,
   Network,
   Phone,
@@ -44,13 +45,28 @@ export function IntelPanel({
   busy,
   searchedKeys,
   onSearch,
+  onSearchAll,
+  searchAllCap,
 }: {
   entries: IntelEntry[];
   busy: boolean;
   searchedKeys: Set<string>;
   onSearch: (kind: TargetType, value: string) => void;
+  /** «Barchasini qidirish» — barcha tekshirilmagan izlar birga navbatga tushadi */
+  onSearchAll?: () => void;
+  /** Shu sessiyada yana nechta skaner ishga tushirish mumkin (limit) */
+  searchAllCap?: number;
 }) {
   const [copied, setCopied] = useState<string | null>(null);
+
+  const notSearched = onSearchAll
+    ? entries.filter((e) => !searchedKeys.has(`${e.kind}:${e.value}`))
+    : [];
+  const notSearchedCount = notSearched.length;
+  const willSearchCount =
+    typeof searchAllCap === "number" && searchAllCap >= 0
+      ? Math.min(notSearchedCount, searchAllCap)
+      : notSearchedCount;
 
   const copyValue = async (value: string) => {
     try {
@@ -85,6 +101,26 @@ export function IntelPanel({
           </Badge>
         )}
       </div>
+
+      {/* «Barchasini qidirish» — barcha izlar BIRGA parallel navbatga tushadi */}
+      {entries.length > 0 && onSearchAll && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="w-full mt-3 gap-2 text-xs border-primary/40 text-primary hover:bg-primary/10"
+          disabled={busy || notSearchedCount === 0 || willSearchCount === 0}
+          onClick={onSearchAll}
+        >
+          <ListChecks className="w-3.5 h-3.5" />
+          {notSearchedCount === 0
+            ? "Barchasi tekshirilgan"
+            : willSearchCount === 0
+              ? "Skaner limiti to'lgan — yangi sessiya oching"
+              : `Barchasini qidirish (${willSearchCount}${
+                  willSearchCount < notSearchedCount ? ` / ${notSearchedCount}` : ""
+                }) — parallel`}
+        </Button>
+      )}
 
       {entries.length === 0 ? (
         <p className="mt-3 text-[11px] text-muted-foreground leading-relaxed">
