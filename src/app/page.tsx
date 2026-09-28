@@ -35,6 +35,16 @@ import {
   Gauge,
   Snail,
   Rocket,
+  SearchCheck,
+  Flame,
+  Globe2,
+  Bot,
+  DatabaseZap,
+  MailSearch,
+  Antenna,
+  PhoneCall,
+  MapPin,
+  Smartphone,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -107,6 +117,17 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "username-probe": UserCheck,
   "phone-meta": Phone,
   "wiki-people": BookOpen,
+  // Premium (API kalitli) manbalar
+  serper: SearchCheck,
+  "brave-api": Flame,
+  "google-cse": Globe2,
+  tavily: Bot,
+  hibp: DatabaseZap,
+  hunter: MailSearch,
+  shodan: Antenna,
+  numlookup: PhoneCall,
+  ipinfo: MapPin,
+  "phone-trace": Smartphone,
 };
 
 const EXAMPLES: { type: TargetType; query: string }[] = [

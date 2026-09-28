@@ -12,6 +12,7 @@ import { parsePhoneNumberFromString } from "libphonenumber-js/max";
 import type { SearchResultItem, TargetType } from "@/lib/osint";
 import { FREEMAIL_DOMAINS, PLATFORM_DOMAINS } from "@/lib/osint";
 import { scanWhatsMyName, type WmnProgressCb } from "@/lib/whatsmyname";
+import { PREMIUM_RUNS } from "@/lib/premium-sources";
 
 // ===== Yordamchilar =====
 
@@ -1358,20 +1359,25 @@ export const DIRECT_RUNS: Record<
   "username-probe": usernameProbeSource,
   "phone-meta": phoneMetaSource,
   "wiki-people": wikiPeopleSource,
+  // Premium (API kalitli) manbalar — .env'dagi kalitlar bilan faollashadi
+  ...PREMIUM_RUNS,
 };
+
+// Kalitli (premium) qidiruv dvigatellari — barcha maqsad turlarida ishlaydi
+const PREMIUM_SEARCH_IDS = ["serper", "brave-api", "google-cse", "tavily"];
 
 export function directSourceIdsFor(type: TargetType): string[] {
   return type === "domain"
-    ? ["dns", "whois", "subdomains", "site-probe", "recon"]
+    ? ["dns", "whois", "subdomains", "site-probe", "recon", "shodan", "hunter", ...PREMIUM_SEARCH_IDS]
     : type === "ip"
-      ? ["ip-intel", "whois-ip", "ptr-recon"]
+      ? ["ip-intel", "whois-ip", "ptr-recon", "shodan", "ipinfo", ...PREMIUM_SEARCH_IDS]
       : type === "email"
-        ? ["breaches", "gravatar", "mailbox", "corp-domain", "github-email"]
+        ? ["breaches", "gravatar", "mailbox", "corp-domain", "github-email", "hibp", "hunter", ...PREMIUM_SEARCH_IDS]
         : type === "username"
-          ? ["whatsmyname", "username-probe"]
+          ? ["whatsmyname", "username-probe", ...PREMIUM_SEARCH_IDS]
           : type === "phone"
-            ? ["phone-meta"]
+            ? ["phone-meta", "numlookup", ...PREMIUM_SEARCH_IDS]
             : type === "name"
-              ? ["wiki-people"]
+              ? ["wiki-people", ...PREMIUM_SEARCH_IDS]
               : [];
 }

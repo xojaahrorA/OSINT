@@ -99,6 +99,29 @@ Agar operatorli so'rov bo'yicha hammasi bo'sh bo'lsa, tizim so'rovni avtomatik s
 
 Majburiy rejim: `.env` faylga `SEARCH_ENGINE=open` yozsangiz, Z.ai umuman ishlatilmaydi (lokal mashina uchun tavsiya etiladi).
 
+### Premium manbalar (OSINT Framework'dagi pullik/bepul xizmatlar)
+
+HTML dvigatellar ba'zan bloklanadi (403/429/captcha) — bu ularning bot-himoyasi. Bunga doimiy yechim: **API kalitli manbalar**. Kalitni `.env` faylga yozasiz — shu zahoti modul sifatida skanerga qo'shiladi; kalit yo'q bo'lsa manba jimgina o'tkaziladi, skaner to'xtamaydi.
+
+| Kalit (`.env`) | Servis | Nima beradi | Bepul limit |
+|---|---|---|---|
+| `SERPER_API_KEY` | [serper.dev](https://serper.dev) | **Google natijalari** + Knowledge Graph — eng aniq, bloklanmaydi | 2500 so'rov |
+| `BRAVE_API_KEY` | [Brave Search API](https://api-dashboard.search.brave.com/register) | Brave rasmiy API — HTML 429 yo'q | oyiga 2 000 |
+| `GOOGLE_CSE_KEY` + `GOOGLE_CSE_CX` | [Google Programmable Search](https://programmablesearchengine.google.com) | Google rasmiy CSE | kuniga 100 |
+| `TAVILY_API_KEY` | [app.tavily.com](https://app.tavily.com) | AI-optimallashtirilgan qidiruv | oyiga 1 000 |
+| `HIBP_API_KEY` | [haveibeenpwned.com](https://haveibeenpwned.com/API/Key) | Email oqishlari — eng aniq breach baza (≈$3.50/oy) | pullik |
+| `HUNTER_API_KEY` | [hunter.io](https://hunter.io/api-keys) | Email tasdiqlash + domen bo'yicha xodim email/ism-familiyalari | oyiga 25 |
+| `SHODAN_API_KEY` | [account.shodan.io](https://account.shodan.io/register) | Ochiq portlar, servis bannerlari, tarix | bepul hisob |
+| `NUMLOOKUP_API_KEY` | [numlookupapi.com](https://app.numlookupapi.com/register) | Telefon holati, operator, liniya turi | kuniga 100 |
+| `IPINFO_TOKEN` | [ipinfo.io](https://ipinfo.io/signup) | Aniq IP geo/ASN, VPN/proxy aniqlash | oyiga 50 000 |
+
+Kalitli dvigatellarning katta afzalligi: **403/429/captcha umuman bo'lmaydi** — shuning uchun ochiq dvigatellar doim bloklanib turadigan tarmoqlarda aynan ular asosiy kuch bo'ladi. Diagnostika tugmasi qaysi kalitlar faol ekanini ko'rsatadi.
+
+### Telefon va ism qidiruvini yaxshilash
+
+- **«Telefon izlari» moduli** — raqamning barcha formatlari (E.164 `+998901234567`, milliy `90 123 45 67`, uzluksiz) bo'yicha parallel qidiruv: oddiy qidiruv ko'rmaydigan e'lon, ijtimoiy tarmoq va oqish izlarini topadi.
+- **Google Knowledge Graph (Serper)** — ism-familiya bo'yicha rasmiy ma'lumotnoma javobini beradi.
+
 ### Diagnostika (npm run doctor)
 
 Lokal mashinada qidiruv ishlamasa:

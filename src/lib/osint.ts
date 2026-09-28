@@ -172,6 +172,79 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
     description: "Mashhur shaxslar haqida ma'lumotnoma — bio, kasb, sanalar (DuckDuckGo Knowledge Graph)",
     appliesTo: ["name"],
   },
+  // ---- Premium (API kalitli) manbalar — .env ga kalit yozilsa faollashadi ----
+  {
+    id: "serper",
+    title: "Google (Serper)",
+    icon: "SearchCheck",
+    description:
+      "Google natijalari rasmiy API orqali + Knowledge Graph — eng aniq topilma, 403/429/captcha yo'q. Kalit: serper.dev (2500 bepul)",
+    appliesTo: ["username", "email", "phone", "name", "domain", "ip"],
+  },
+  {
+    id: "brave-api",
+    title: "Brave Search API",
+    icon: "Flame",
+    description:
+      "Brave rasmiy qidiruv API — HTML bloklari va 429 yo'q, kvota bilan ishonchli. Kalit: brave api-dashboard (oyiga 2000 bepul)",
+    appliesTo: ["username", "email", "phone", "name", "domain", "ip"],
+  },
+  {
+    id: "google-cse",
+    title: "Google Programmable",
+    icon: "Globe2",
+    description:
+      "Google rasmiy CSE API — GOOGLE_CSE_KEY + GOOGLE_CSE_CX (kuniga 100 bepul)",
+    appliesTo: ["username", "email", "phone", "name", "domain", "ip"],
+  },
+  {
+    id: "tavily",
+    title: "Tavily AI qidiruv",
+    icon: "Bot",
+    description:
+      "AI-optimallashtirilgan qidiruv — shaxs/username izlashda sifatli natija. Kalit: app.tavily.com (oyiga 1000 bepul)",
+    appliesTo: ["username", "email", "phone", "name", "domain", "ip"],
+  },
+  {
+    id: "hibp",
+    title: "Oqishlar (HIBP)",
+    icon: "DatabaseZap",
+    description:
+      "Eng aniq breach baza: email qaysi oqishlarda, qanday maydonlar oshkor bo'lgan. Kalit: haveibeenpwned.com/API/Key",
+    appliesTo: ["email"],
+  },
+  {
+    id: "hunter",
+    title: "Hunter.io",
+    icon: "MailSearch",
+    description:
+      "Email tasdiqlash (ishonch bali) va domen bo'yicha xodimlar email/ism-familiyalari. Kalit: hunter.io/api-keys (oyiga 25 bepul)",
+    appliesTo: ["email", "domain"],
+  },
+  {
+    id: "shodan",
+    title: "Shodan to'liq API",
+    icon: "Antenna",
+    description:
+      "Ochiq portlar, servis bannerlari, tarix — InternetDB'dan ancha chuqur. Kalit: account.shodan.io (bepul hisob)",
+    appliesTo: ["ip", "domain"],
+  },
+  {
+    id: "numlookup",
+    title: "NumLookup",
+    icon: "PhoneCall",
+    description:
+      "Raqam holati, operator, liniya turi — xalqaro baza. Kalit: numlookupapi.com (kuniga 100 bepul)",
+    appliesTo: ["phone"],
+  },
+  {
+    id: "ipinfo",
+    title: "IPinfo",
+    icon: "MapPin",
+    description:
+      "Aniq geolokatsiya, ISP/ASN, VPN/proxy aniqlash. Kalit: ipinfo.io/signup (oyiga 50k bepul)",
+    appliesTo: ["ip"],
+  },
 ];
 
 export interface OsintModuleDef {
@@ -340,6 +413,48 @@ export const OSINT_MODULES: OsintModuleDef[] = [
       `site:shodan.io OR site:censys.io OR site:zoomeye.com ${q(t)}`,
       `${q(t)} (DNS OR MX OR TXT yozuvlar OR SSL sertifikat OR subdomen)`,
     ],
+    num: 6,
+  },
+  {
+    id: "phone-trace",
+    title: "Telefon izlari",
+    icon: "Smartphone",
+    description:
+      "Raqamning barcha formatlari bo'yicha maxsus qidiruv: E.164, milliy, uzluksiz — oddiy qidiruv ko'rmaydigan izlarni topadi",
+    appliesTo: ["phone"],
+    queries: (t) => {
+      const digits = t.replace(/\D/g, "");
+      const e164 =
+        digits.startsWith("998")
+          ? `+${digits}`
+          : digits.length === 9
+            ? `+998${digits}`
+            : `+${digits.replace(/^8/, "7")}`;
+      const nat = digits.startsWith("998") ? digits.slice(3) : digits;
+      const natFmt =
+        nat.length === 9
+          ? `${nat.slice(0, 2)} ${nat.slice(2, 5)} ${nat.slice(5, 7)} ${nat.slice(7, 9)}`
+          : nat;
+      return [
+        `"${e164}" OR "${natFmt}"`,
+        `${nat} (telegram OR instagram OR facebook OR linkedin OR tiktok)`,
+        `${nat} (olx OR e'lon OR biznes OR kontakt OR ma'lumotnoma)`,
+      ];
+    },
+    deepQueries: (t) => {
+      const digits = t.replace(/\D/g, "");
+      const e164 =
+        digits.startsWith("998")
+          ? `+${digits}`
+          : digits.length === 9
+            ? `+998${digits}`
+            : `+${digits.replace(/^8/, "7")}`;
+      const nat = digits.startsWith("998") ? digits.slice(3) : digits;
+      return [
+        `"${e164}" (oqish OR pastebin OR leak OR ma'lumotlar bazasi)`,
+        `${nat} (SMS OR kod OR tasdiqlash OR ro'yxatdan o'tish)`,
+      ];
+    },
     num: 6,
   },
 ];

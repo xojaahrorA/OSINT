@@ -16,6 +16,11 @@ import {
   type SpeedProfile,
 } from "@/lib/search-engines";
 import { DIRECT_RUNS, cleanDomain } from "@/lib/osint-sources";
+import {
+  premiumKeyMissing,
+  premiumFind,
+  premiumHint,
+} from "@/lib/premium-sources";
 
 export const maxDuration = 180;
 
@@ -166,7 +171,7 @@ export async function POST(req: NextRequest) {
       // crt.sh, Wayback, urlscan.io, Shodan InternetDB — faqat domen/IP uchun.
       // Qidiruv dvigatellari bu ma'lumotlarni indekslamaydi — shuning uchun
       // real API'larga to'g'ridan-to'g'ri ulanamiz.
-      const directPlanned =
+      const directPlannedAll =
         querySet !== "deep-only"
           ? DIRECT_MODULE_META.filter(
               (m) =>
@@ -174,8 +179,14 @@ export async function POST(req: NextRequest) {
                 (!requestedModules || requestedModules.length === 0 || requestedModules.includes(m.id))
             )
           : [];
+      // Premium manbalardan kaliti yo'qlari o'tkazib yuboriladi — skaner
+      // to'xtamasligi kerak; foydalanuvchiga kalit qayerdan olinishi aytib beriladi.
+      const directNoKey = directPlannedAll.filter((m) => premiumKeyMissing(m.id));
+      const directPlanned = directPlannedAll.filter(
+        (m) => !premiumKeyMissing(m.id)
+      );
 
-      if (applicable.length === 0 && directPlanned.length === 0) {
+      if (applicable.length === 0 && directPlannedAll.length === 0) {
         send({ type: "error", message: "Tanlangan modullar bo'yicha so'rov topilmadi" });
         close();
         return;
@@ -209,6 +220,13 @@ export async function POST(req: NextRequest) {
         log(
           "sys",
           `${directPlanned.length} ta to'g'ridan-to'g'ri manba ulanadi: ${directPlanned.map((m) => m.title).join(", ")}`
+        );
+      }
+      for (const m of directNoKey) {
+        const meta = premiumFind(m.id);
+        log(
+          "info",
+          `[${m.title}] API kaliti o'rnatilmagan — bu manba o'tkazildi. ${meta ? premiumHint(meta) : ""}`
         );
       }
 

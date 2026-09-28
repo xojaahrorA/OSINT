@@ -17,6 +17,11 @@ import {
   SEARCH_ENGINES_VERSION,
 } from "./search-engines";
 import type { SearchResultItem } from "./osint";
+import {
+  PREMIUM_SOURCES,
+  premiumKeySet,
+  premiumHint,
+} from "./premium-sources";
 
 export interface DoctorCheck {
   id: string;
@@ -213,18 +218,40 @@ export async function runDiagnostics(): Promise<DoctorReport> {
     (a, b) => (order.get(a.id) ?? 999) - (order.get(b.id) ?? 999)
   );
 
-  // 6. Xulosa
+  // 6. Premium (API kalitli) manbalar holati — kalit .env'da bo'lsa "faol"
+  const activePremium: string[] = [];
+  const premiumSearchIds = ["serper", "brave-api", "google-cse", "tavily"];
+  let premiumSearchActive = false;
+  for (const p of PREMIUM_SOURCES) {
+    const ok = premiumKeySet(p.id);
+    if (ok) {
+      activePremium.push(p.title);
+      if (premiumSearchIds.includes(p.id)) premiumSearchActive = true;
+    }
+    checks.push({
+      id: `premium-${p.id}`,
+      label: `${p.title} (premium)`,
+      status: ok ? "ok" : "skip",
+      detail: ok
+        ? `Faol — ${p.what}`
+        : `O'rnatilmagan — ${premiumHint(p)}`,
+    });
+  }
+
+  // 7. Xulosa
   let recommendation: string;
   if (nodeMajor < 18) {
     recommendation =
       "Node.js 20+ o'rnating (nodejs.org yoki nvm install 20) — eski Node'da fetch ishlamaydi.";
-  } else if (workingEngines.length === 0) {
+  } else if (workingEngines.length === 0 && !premiumSearchActive) {
     recommendation =
-      "Hech bir qidiruv dvigateli javob bermadi. (1) Internetni tekshiring, (2) Kali'da 'sudo systemctl restart networking' yoki VPN/Proksi sozlamalarini tekshiring, (3) DNS'ni 8.8.8.8 ga o'zgartiring, (4) Bir necha daqiqadan keyin qayta tekshiring — ba'zi dvigatellar vaqtinchalik blok qo'yadi.";
-  } else if (workingEngines.length < 3) {
-    recommendation = `Faol dvigatellar: ${workingEngines.join(", ")}. Skaner ular orqali ishlaydi, lekin bir nechta dvigatel bloklangan — oddiy rejimda sekinroq ishlaydi. Biroz kutib tursangiz, bloklar ochiladi.`;
+      "Hech bir qidiruv dvigateli javob bermadi. (1) Internetni tekshiring, (2) VPN/Proksi sozlamalarini tekshiring, (3) DNS'ni 8.8.8.8 ga o'zgartiring, (4) Serper/Brave API kabi kalitli dvigatellarni ulang — ular HTML bloklarga tushmaydi (.env ga kalit yozing).";
+  } else if (workingEngines.length < 3 && !premiumSearchActive) {
+    recommendation = `Faol dvigatellar: ${workingEngines.join(", ")}. Skaner ular orqali ishlaydi, lekin bir nechta dvigatel bloklangan — oddiy rejimda sekinroq ishlaydi. Maslahat: .env faylga SERPER_API_KEY (serper.dev — 2500 bepul) qo'shsangiz, Google natijalari doim ochiq bo'ladi.`;
+  } else if (premiumSearchActive && activePremium.length > 0) {
+    recommendation = `Hammasi joyida — ${workingEngines.length} ta ochiq dvigatel + ${activePremium.length} ta premium manba ishlayapti (${activePremium.slice(0, 3).join(", ")}${activePremium.length > 3 ? "..." : ""}). Skaner bemalol ishlaydi.`;
   } else {
-    recommendation = `Hammasi joyida — ${workingEngines.length} ta dvigatel ishlayapti (${workingEngines.slice(0, 4).join(", ")}${workingEngines.length > 4 ? "..." : ""}). Skaner bemalol ishlaydi.`;
+    recommendation = `Hammasi joyida — ${workingEngines.length} ta dvigatel ishlayapti (${workingEngines.slice(0, 4).join(", ")}${workingEngines.length > 4 ? "..." : ""}). Skaner bemalol ishlaydi. Aniqligini oshirish uchun .env ga bepul premium kalitlarni qo'shing (Serper/Brave/Tavily — yuqorida ro'yxati bor).`;
   }
 
   return {
