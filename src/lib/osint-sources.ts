@@ -523,6 +523,54 @@ async function reconSource(rawTarget: string): Promise<SearchResultItem[]> {
   return out;
 }
 
+// ===== Maltego uslubidagi transformlar: email/ism → bog'liq domenlar =====
+// Maltego'dagi pullik transformlarga o'xshash ish — bepul manba bilan:
+//   Reverse WHOIS (ViewDNS) — shu email/ism egasining boshqa ro'yxatga olingan domenlari
+
+async function reverseWhoisSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const q = rawTarget.trim();
+  if (q.length < 5) return [];
+  const html = await ftext(
+    `https://viewdns.info/reversewhois/?q=${encodeURIComponent(q)}`,
+    12_000,
+    300_000
+  );
+  if (!html || /captcha|attention required|access denied/i.test(html.slice(0, 2000))) return [];
+  // Yangi ViewDNS UI: <tbody><tr><td>akdenizdenge.com</td><td>2011-12-26</td><td>NAME.COM, INC.</td></tr>
+  // Butun hujayra faqat bitta token bo'lgani uchun sana (nuqtasiz) va registrator (ko'p so'zli) mos kelmadi
+  const ti = html.search(/<tbody/i);
+  const te = html.search(/<\/tbody>/i);
+  if (ti < 0 || te < 0) return [];
+  const domains = [
+    ...new Set(
+      [...html.slice(ti, te).matchAll(/<td[^>]*>\s*([a-z0-9][a-z0-9.-]+\.[a-z]{2,})\s*<\/td>/gi)].map(
+        (m) => m[1].toLowerCase()
+      )
+    ),
+  ].filter((d) => d !== q.toLowerCase());
+  if (domains.length === 0) return [];
+  const isEmail = q.includes("@");
+  const out: SearchResultItem[] = [
+    item(
+      `Reverse WHOIS: ${domains.length} ta domen — shu ${isEmail ? "email" : "ism"} egasidan`,
+      `https://viewdns.info/reversewhois/?q=${encodeURIComponent(q)}`,
+      `Bu ${isEmail ? "email" : "ism-familiya"} bilan ro'yxatga olingan domenlar: ${cap(domains, 10).join(", ")}${domains.length > 10 ? "..." : ""} — Maltego'dagi «Domains by Registrant» transformi.`,
+      "viewdns.info"
+    ),
+  ];
+  for (const d of domains.slice(0, 8)) {
+    out.push(
+      item(
+        `Ega domeni: ${d}`,
+        `https://viewdns.info/whois/${d}`,
+        `Reverse WHOIS: «${q}» ko'rsatkichi bilan ro'yxatga olingan. Ega/aloqa uchun WHOIS yozuvini oching.`,
+        "viewdns.info"
+      )
+    );
+  }
+  return out;
+}
+
 // ===== IP razvedka: ip-api + Shodan InternetDB =====
 
 interface IpApiResp {
@@ -1368,6 +1416,8 @@ export const DIRECT_RUNS: Record<
   telegram: telegramProfileSource,
   "telegram-feed": telegramFeedSource,
   "telegram-bot": telegramBotApiSource,
+  // Maltego uslubidagi transformlar (email/ism → bog'liq domenlar; otx premium'da)
+  "reverse-whois": reverseWhoisSource,
   // Premium (API kalitli) manbalar — .env'dagi kalitlar bilan faollashadi
   ...PREMIUM_RUNS,
 };
@@ -1377,16 +1427,16 @@ const PREMIUM_SEARCH_IDS = ["serper", "brave-api", "google-cse", "tavily"];
 
 export function directSourceIdsFor(type: TargetType): string[] {
   return type === "domain"
-    ? ["dns", "whois", "subdomains", "site-probe", "recon", "shodan", "hunter", ...PREMIUM_SEARCH_IDS]
+    ? ["dns", "whois", "subdomains", "site-probe", "recon", "shodan", "hunter", "otx", ...PREMIUM_SEARCH_IDS]
     : type === "ip"
-      ? ["ip-intel", "whois-ip", "ptr-recon", "shodan", "ipinfo", ...PREMIUM_SEARCH_IDS]
+      ? ["ip-intel", "whois-ip", "ptr-recon", "shodan", "ipinfo", "otx", ...PREMIUM_SEARCH_IDS]
       : type === "email"
-        ? ["breaches", "gravatar", "mailbox", "corp-domain", "github-email", "hibp", "hunter", ...PREMIUM_SEARCH_IDS]
+        ? ["breaches", "gravatar", "mailbox", "corp-domain", "github-email", "hibp", "hunter", "reverse-whois", ...PREMIUM_SEARCH_IDS]
         : type === "username"
           ? ["whatsmyname", "username-probe", "telegram", "telegram-feed", "telegram-bot", ...PREMIUM_SEARCH_IDS]
           : type === "phone"
             ? ["phone-meta", "numlookup", ...PREMIUM_SEARCH_IDS]
             : type === "name"
-              ? ["wiki-people", ...PREMIUM_SEARCH_IDS]
+              ? ["wiki-people", "reverse-whois", ...PREMIUM_SEARCH_IDS]
               : [];
 }

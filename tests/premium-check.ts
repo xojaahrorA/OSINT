@@ -23,7 +23,7 @@ const ok = (cond: boolean, label: string) => {
 };
 
 console.log("=== 1. Premium metalar ===");
-ok(PREMIUM_SOURCES.length === 10, `10 ta premium manba aniqlangan (${PREMIUM_SOURCES.length})`);
+ok(PREMIUM_SOURCES.length === 11, `11 ta premium manba aniqlangan (${PREMIUM_SOURCES.length})`);
 ok(
   PREMIUM_SOURCES.every((s) => s.envKey && s.getKeyUrl && s.what),
   "har bir meta envKey/getKeyUrl/what maydonlariga ega"
@@ -31,7 +31,7 @@ ok(
 
 console.log("=== 2. Kalit holati (env bo'sh — hammasi missing) ===");
 const missing = premiumMissing();
-ok(missing.length === 10, `kalitsizlar ro'yxati 10 ta (${missing.length})`);
+ok(missing.length === 11, `kalitsizlar ro'yxati 11 ta (${missing.length})`);
 ok(PREMIUM_SOURCES.every((s) => !premiumKeySet(s.id)), "env bo'sh — premiumKeySet false");
 
 console.log("=== 3. DIRECT_RUNS'ga ulanganligi ===");
@@ -46,6 +46,14 @@ const phoneIds = directSourceIdsFor("phone");
 ok(phoneIds.includes("numlookup"), "phone: numlookup bor");
 const ipIds = directSourceIdsFor("ip");
 ok(ipIds.includes("ipinfo") && ipIds.includes("shodan"), "ip: ipinfo + shodan bor");
+ok(ipIds.includes("otx"), "ip: otx (Maltego transformi) bor");
+const emIds = directSourceIdsFor("email");
+ok(
+  emIds.includes("reverse-whois"),
+  "email: reverse-whois (Maltego transformi) bor"
+);
+const nmIds = directSourceIdsFor("name");
+ok(nmIds.includes("reverse-whois"), "name: reverse-whois bor");
 const unIds = directSourceIdsFor("username");
 ok(
   ["telegram", "telegram-feed", "telegram-bot"].every((x) => unIds.includes(x)),
@@ -83,6 +91,7 @@ const noKeyResults = await Promise.all([
   PREMIUM_RUNS.shodan("8.8.8.8"),
   PREMIUM_RUNS.numlookup("+998901234567"),
   PREMIUM_RUNS.ipinfo("8.8.8.8"),
+  PREMIUM_RUNS.otx("example.com"),
 ]);
 ok(
   noKeyResults.every((r) => Array.isArray(r) && r.length === 0),

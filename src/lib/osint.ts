@@ -197,6 +197,23 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
       "Rasmiy API'dan ANIQ javob: chat id, turi, bio, a'zolar soni. Token: @BotFather (mutlaqo bepul)",
     appliesTo: ["username"],
   },
+  // ---- Maltego uslubidagi transformlar: bir obyekt → bog'liq obyektlar ----
+  {
+    id: "otx",
+    title: "AlienVault OTX",
+    icon: "Binoculars",
+    description:
+      "Maltego uslubi: passiv DNS (tarixiy hostlar), URL arxivi, bog'liq infratuzilma. Kalit: otx.alienvault.com (bepul)",
+    appliesTo: ["domain", "ip"],
+  },
+  {
+    id: "reverse-whois",
+    title: "Ega bo'yicha domenlar",
+    icon: "History",
+    description:
+      "Reverse WHOIS: shu email/ism bilan ro'yxatga olingan barcha domenlar (ViewDNS) — Maltegoning eng kuchli transformi",
+    appliesTo: ["email", "name"],
+  },
   // ---- Premium (API kalitli) manbalar — .env ga kalit yozilsa faollashadi ----
   {
     id: "serper",

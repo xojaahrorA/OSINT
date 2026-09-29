@@ -48,6 +48,7 @@ import {
   Send,
   Rss,
   MessageCircle,
+  Binoculars,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -125,6 +126,9 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "telegram-feed": Rss,
   "telegram-bot": Bot,
   "telegram-search": MessageCircle,
+  // Maltego uslubidagi transformlar
+  otx: Binoculars,
+  "reverse-whois": History,
   // Premium (API kalitli) manbalar
   serper: SearchCheck,
   "brave-api": Flame,

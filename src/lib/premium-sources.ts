@@ -158,6 +158,15 @@ export const PREMIUM_SOURCES: PremiumMeta[] = [
     getKeyUrl: "https://t.me/BotFather",
     free: "Mutlaqo bepul — @BotFather'da bot yarating (/newbot), tokenni shu yerga yozing",
   },
+  {
+    id: "otx",
+    title: "AlienVault OTX",
+    envKey: "OTX_API_KEY",
+    appliesTo: ["domain", "ip"],
+    what: "Maltego uslubidagi transform: passiv DNS (tarixiy hostlar), URL arxivi, bog'liq infratuzilma — domen/IP atrofidagi butun tarmoq",
+    getKeyUrl: "https://otx.alienvault.com",
+    free: "Bepul hisob yetarli (kunlik limit bilan) — ro'yxatdan o'tib API key oling",
+  },
 ];
 
 export function premiumKeySet(id: string): boolean {
@@ -622,6 +631,85 @@ export async function ipinfoSource(target: string): Promise<SearchResultItem[]> 
   ];
 }
 
+// ===== 10. AlienVault OTX — Maltego uslubidagi bog'liq infratuzilma transformi =====
+
+interface OtxPassive {
+  passive_dns?: { hostname?: string; address?: string; first?: string; last?: string; type?: string }[];
+}
+interface OtxUrls {
+  url_list?: { url?: string; hostname?: string; httpcode?: number }[];
+}
+
+export async function otxSource(target: string): Promise<SearchResultItem[]> {
+  if (!premiumKeySet("otx")) return [];
+  const key = keyOf("OTX_API_KEY")!;
+  const host = "otx.alienvault.com";
+  const headers = { "X-OTX-API-KEY": key, Accept: "application/json" };
+  const isIp = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(target);
+  const domain = target.replace(/^www\./, "").toLowerCase();
+  if (!isIp && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain)) return [];
+
+  const kind = isIp ? "IPv4" : "domain";
+  const get = async <T>(path: string): Promise<T | null> => {
+    try {
+      const res = await fetch(`https://otx.alienvault.com/api/v1/indicators/${kind}/${encodeURIComponent(target)}${path}`, {
+        headers,
+        signal: AbortSignal.timeout(12_000),
+      });
+      if (!res.ok) return null;
+      return (await res.json()) as T;
+    } catch {
+      return null;
+    }
+  };
+
+  const out: SearchResultItem[] = [];
+
+  // Passiv DNS — bu domen/IP tarixan QAYERGA ulangan (Maltego "toHost" transformi)
+  const pd = await get<OtxPassive>("/passive_dns");
+  const recs = (pd?.passive_dns ?? []).filter((r) => r.hostname || r.address);
+  const uniqHosts = [...new Set(recs.map((r) => (isIp ? r.hostname! : r.address!)))].filter(Boolean);
+  if (uniqHosts.length > 0) {
+    out.push({
+      name: `OTX passiv DNS: ${uniqHosts.length} ta bog'liq ${isIp ? "host" : "IP"}`,
+      url: `https://otx.alienvault.com/indicator/${isIp ? "ipv4" : "domain"}/${encodeURIComponent(target)}`,
+      snippet: `Tarixiy bog'lanishlar: ${uniqHosts.slice(0, 12).join(", ")}${uniqHosts.length > 12 ? "..." : ""} — Maltego'dagi "resolved to" transformi ushbu infratuzilmani ochadi.`,
+      host_name: host,
+    });
+  }
+  for (const r of recs.slice(0, 6)) {
+    if (!r.hostname || !r.address) continue;
+    out.push({
+      name: `OTX: ${isIp ? r.hostname : r.address}`,
+      url: `https://otx.alienvault.com/indicator/${isIp ? "domain" : "ipv4"}/${encodeURIComponent(isIp ? r.hostname! : r.address!)}`,
+      snippet: [
+        r.first ? `Birinchi: ${r.first.slice(0, 10)}` : "",
+        r.last ? `Oxirgi: ${r.last.slice(0, 10)}` : "",
+        isIp ? "Bu host shu IP'ga ulangan" : "Bu IP shu domenga tegishli bo'lgan",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      host_name: host,
+    });
+  }
+
+  // URL arxivi — domenda ko'rilgan sahifalar
+  const ul = await get<OtxUrls>("/url_list?limit=8");
+  for (const u of (ul?.url_list ?? []).slice(0, 5)) {
+    if (!u.url) continue;
+    out.push({
+      name: `OTX URL: ${u.url.slice(0, 80)}`,
+      url: u.url,
+      snippet:
+        [u.httpcode ? `HTTP: ${u.httpcode}` : "", u.hostname ? `Host: ${u.hostname}` : ""]
+          .filter(Boolean)
+          .join(" · ") || "OTX url arxivi",
+      host_name: host,
+    });
+  }
+  return out;
+}
+
 // ===== DIRECT_RUNS'ga bog'lanadigan xarita =====
 
 export const PREMIUM_RUNS: Record<
@@ -637,4 +725,5 @@ export const PREMIUM_RUNS: Record<
   shodan: shodanSource,
   numlookup: numlookupSource,
   ipinfo: ipinfoSource,
+  otx: otxSource,
 };

@@ -115,6 +115,7 @@ HTML dvigatellar ba'zan bloklanadi (403/429/captcha) — bu ularning bot-himoyas
 | `NUMLOOKUP_API_KEY` | [numlookupapi.com](https://app.numlookupapi.com/register) | Telefon holati, operator, liniya turi | kuniga 100 |
 | `IPINFO_TOKEN` | [ipinfo.io](https://ipinfo.io/signup) | Aniq IP geo/ASN, VPN/proxy aniqlash | oyiga 50 000 |
 | `TELEGRAM_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) | Telegram rasmiy API: chat id, turi, bio, obunachilar soni — **mutlaqo bepul** | cheklanmagan |
+| `OTX_API_KEY` | [otx.alienvault.com](https://otx.alienvault.com) | **Maltego uslubi**: passiv DNS, tarixiy hostlar, URL arxivi, bog'liq infratuzilma | bepul hisob |
 
 Kalitli dvigatellarning katta afzalligi: **403/429/captcha umuman bo'lmaydi** — shuning uchun ochiq dvigatellar doim bloklanib turadigan tarmoqlarda aynan ular asosiy kuch bo'ladi. Diagnostika tugmasi qaysi kalitlar faol ekanini ko'rsatadi.
 
@@ -130,6 +131,18 @@ Oddiy qidiruv tizimlari t.me ichidagi kontentni deyarli indekslamaydi — shunin
 | **Telegram izlari** (barcha maqsad turlari) | `site:t.me`, telegra.ph, tgstat/telemetr domeni bo'yicha maxsus so'rovlar | Qidiruv dvigatellari zanjiri |
 
 Telefon raqam bo'yicha Telegram'ni passiv tekshirish imkoni yo'q (Telegram shaxsiy raqamlarni yashiradi) — telefon uchun «Telegram izlari» va «Telefon izlari» modullari ishlaydi.
+
+### Maltego uslubidagi transformlar
+
+Maltego — link-analiz va transformlar orqali bog'liq obyektlarni ochadigan pullik platforma. OSINT Radar aynan shu transformlarni **bepul manbalar bilan** amalga oshiradi: bir topilmadan boshqa bog'liq obyektlar avtomatik ochiladi.
+
+| Transform | Nima qiladi | Manba |
+|---|---|---|
+| **Ega bo'yicha domenlar** | Shu email/ism bilan ro'yxatga olingan BARCHA domenlar — bir shaxsning butun domen portfelini ochadi (Maltego «Domains by Registrant») | ViewDNS Reverse WHOIS — bepul, kalit yo'q |
+| **AlienVault OTX** | Domen/IP'ning passiv DNS tarixi, eski hostlari, URL arxivi — infratuzilma grafigi (Maltego «resolved to») | OTX API — bepul kalit bilan |
+| **Qo'shni domenlar** | Bir serverdagi boshqa saytlar — xuddi shu eganing boshqa loyihalari bo'lishi mumkin | HackerTarget reverse IP — bepul |
+
+Bu transformlar **avtomatik zanjir** hosil qiladi: email → ega domenlari → domeni infratuzilmasi → qo'shni domeni — xuddi Maltego grafigidagi kabi bog'lanish zanjiri. Har bir topilma «Topilgan qo'shimcha ma'lumotlar» paneliga tushadi va u yerdan chuqurroq qidirish mumkin.
 
 #### BotFather'dan token olish — 5 daqiqa, mutlaqo bepul
 
