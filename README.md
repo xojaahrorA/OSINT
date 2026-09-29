@@ -159,6 +159,17 @@ Bu transformlar **avtomatik zanjir** hosil qiladi: email → ega domenlari → d
 
 Token noto'g'ri yozilsa skaner to'xtamaydi — «Telegram Bot API» moduli o'zi xatoni tushuntirib beradi (eskirgan token / chat topilmadi va h.k.). Diagnostika tugmasida ham token holati ko'rinadi.
 
+### Bog'lanish grafigi (Maltego grafigi)
+
+Skaner topgan har bir narsa **bir-biriga ulangan interaktiv tarmoqda** ko'rinadi — Maltego'ning mashhur grafigiga o'xshab. Natijalar ustidagi «Graf / Ro'yxat» almashtirgichi orqali ochiladi:
+
+- **Maqsad markazda** — atrofida topilgan sahifalar, ularning atrofida ajratib olingan entitetlar (email, telefon, username, domen, IP, ism) — uch qatlamli bog'lanish tarmog'i
+- **Jonli force-directed graf** — skaner davom etar ekan yangi tugunlar paydo bo'ladi va tarmoq o'z-o'zidan tabiiy joylashadi (fizik simulatsiya: itarish + prujinalar)
+- **Ranglar bilan ajratilgan turlar** — har bir tur o'z rangida (username — ko'k, email — sariq, telefon — binafsha, domen — firuza, IP — to'q sariq, ism — pushti); legenda chiplarini bosib filtrlash mumkin
+- **Tugunni bosing** — tafsilot paneli: qaysi modul topgan, necha marta uchragan, «Havolani ochish» (sahifa uchun) yoki «Shu bo'yicha qidirish» (entitet uchun — pivot qidiruv) tugmalari
+- **Tanlangan tugun ta'kidlanadi** — qolgan graf xiralashadi, faqat bevosita qo'shnilari yorqin ko'rinadi
+- **To'liq boshqaruv** — sudrash (drag), g'ildirak bilan zoom, pan, «Joylashtirish» (avtomatik sig'dirish) va «Qayta joylash» (qayta tartiblash)
+
 ### Telefon va ism qidiruvini yaxshilash
 
 - **«Telefon izlari» moduli** — raqamning barcha formatlari (E.164 `+998901234567`, milliy `90 123 45 67`, uzluksiz) bo'yicha parallel qidiruv: oddiy qidiruv ko'rmaydigan e'lon, ijtimoiy tarmoq va oqish izlarini topadi.

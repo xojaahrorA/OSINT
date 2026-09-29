@@ -33,7 +33,7 @@ export interface IntelSourceItem {
 }
 
 /** Profil sanovchi modullar — ularning URL hostlari profil saytlari, "domen" iz emas */
-const PROFILE_ENUM_MODULES = new Set(["whatsmyname", "profiles", "username-probe"]);
+export const PROFILE_ENUM_MODULES = new Set(["whatsmyname", "profiles", "username-probe"]);
 
 /** Har bir turdan eng ko'pi bilan qancha saqlanadi (shovqinni cheklash) */
 const CAPS: Record<TargetType, number> = {
@@ -150,7 +150,7 @@ function capRuns(text: string): string[][] {
 }
 
 /** Matndan ism-familiya nomzodlarini ajratadi */
-function extractNames(text: string): string[] {
+export function extractNames(text: string): string[] {
   const out: string[] = [];
   // 1) Strukturaviy maydonlar: "Ism: Pavel Durov", "Name: ..." — ishonchli,
   //    all-caps ham ruxsat ("KARIMOV ALI"), 2-3 so'z
@@ -172,7 +172,7 @@ function extractNames(text: string): string[] {
   return out;
 }
 
-function isValidPhoneDigits(digits: string): boolean {
+export function isValidPhoneDigits(digits: string): boolean {
   if (digits.length < 7 || digits.length > 15) return false;
   if (/^0+\d*$/.test(digits) && digits.replace(/0/g, "").length < 2) return false;
   // Ketma-ket 7+ bir xil raqam — ID/indifikator, telefon emas

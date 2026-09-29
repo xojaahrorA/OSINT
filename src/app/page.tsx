@@ -12,6 +12,7 @@ import {
   Newspaper,
   Server,
   Link2,
+  List,
   Square,
   ShieldAlert,
   Loader2,
@@ -49,6 +50,7 @@ import {
   Rss,
   MessageCircle,
   Binoculars,
+  Waypoints,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,6 +63,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { TerminalLog } from "@/components/osint/terminal-log";
 import { ResultCard } from "@/components/osint/result-card";
+import { EntityGraph } from "@/components/osint/entity-graph";
 import { AiPanel } from "@/components/osint/ai-panel";
 import { DeepPanel, type PendingPivot, type SourceStat } from "@/components/osint/deep-panel";
 import { IntelPanel } from "@/components/osint/intel-panel";
@@ -339,6 +342,8 @@ export default function Home() {
   const [intel, setIntel] = useState<IntelEntry[]>([]);
   const intelRef = useRef<IntelEntry[]>([]);
   const [searchedKeys, setSearchedKeys] = useState<Set<string>>(new Set());
+  // Ko'rinish rejimi — «graf» (Maltego uslubidagi bog'lanish tarmog'i) yoki «royxat»
+  const [viewMode, setViewMode] = useState<"graf" | "royxat">("graf");
 
   const scanAbortsRef = useRef<Set<AbortController>>(new Set());
   // Parallel ishlayotgan skanerlar yorliqlari — «Skanerlanmoqda: A · B · C»
@@ -1670,6 +1675,51 @@ export default function Home() {
                   </p>
                 </Card>
               ) : (
+                <div className="space-y-3">
+                  {/* Ko'rinish almashtirish — Graf (Maltego uslubi) / Ro'yxat */}
+                  <div className="flex items-center gap-2">
+                    <div className="flex rounded-lg border bg-secondary/40 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setViewMode("graf")}
+                        className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors ${
+                          viewMode === "graf"
+                            ? "bg-primary/15 text-primary"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        <Waypoints className="w-3.5 h-3.5" />
+                        Graf
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setViewMode("royxat")}
+                        className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors ${
+                          viewMode === "royxat"
+                            ? "bg-primary/15 text-primary"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        <List className="w-3.5 h-3.5" />
+                        Ro&apos;yxat
+                      </button>
+                    </div>
+                    <span className="text-[11px] text-muted-foreground hidden sm:inline">
+                      {viewMode === "graf"
+                        ? "topilmalar bir-biriga ulangan tarmoqda"
+                        : "modullar bo'yicha ro'yxat"}
+                    </span>
+                  </div>
+
+                  {viewMode === "graf" ? (
+                    <EntityGraph
+                      target={target ?? { type, query: input }}
+                      modules={modules}
+                      busy={busy}
+                      searchedKeys={searchedKeys}
+                      onSearchEntity={runIntelSearch}
+                    />
+                  ) : (
                 <Tabs
                   value={activeTab || modules[0]?.moduleId}
                   onValueChange={(v) => {
@@ -1736,6 +1786,8 @@ export default function Home() {
                     </TabsContent>
                   ))}
                 </Tabs>
+                  )}
+                </div>
               )}
             </div>
           </section>
