@@ -278,6 +278,19 @@ const CHAT_TYPE_UZ: Record<string, string> = {
   bot: "Bot",
 };
 
+/** Bot API javobi — xato holatida ham JSON qaytaradi (401/400 kabi), shuning uchun alohida fetch */
+async function botApiCall<T>(url: string, ms = 10_000): Promise<(T & { ok?: boolean; error_code?: number; description?: string }) | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": UA, Accept: "application/json" },
+      signal: timeout(ms),
+    });
+    return (await res.json()) as T & { ok?: boolean; error_code?: number; description?: string };
+  } catch {
+    return null;
+  }
+}
+
 export async function telegramBotApiSource(rawTarget: string): Promise<SearchResultItem[]> {
   const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
   if (!token) return [];
@@ -285,11 +298,31 @@ export async function telegramBotApiSource(rawTarget: string): Promise<SearchRes
   if (!u) return [];
 
   const base = `https://api.telegram.org/bot${token}`;
-  const chat = await fjson<{ result?: TgChat }>(
+  const chat = await botApiCall<{ result?: TgChat }>(
     `${base}/getChat?chat_id=@${encodeURIComponent(u)}`,
     10_000
   );
-  if (!chat?.ok || !chat.result) return [];
+  if (chat === null) return []; // tarmoq xatosi — jimgina
+
+  // Xatoni foydalanuvchiga AYTAZIMIZ — token muammosini aniqlash oson bo'lsin
+  if (!chat.ok) {
+    const code = chat.error_code ?? 0;
+    const why =
+      code === 401
+        ? "Token noto'g'ri yoki eskirgan — @BotFather'da /mybots → API Token bilan tekshiring, to'g'risini .env TELEGRAM_BOT_TOKEN ga yozing"
+        : code === 400 && /not found/i.test(chat.description ?? "")
+          ? "Chat topilmadi — profil mavjud emas, yashirilgan yoki bot bu chatni hali ko'rmagan. Yuqoridagi «Telegram profili» moduli natijasiga qarang"
+          : `API xatosi (${code}): ${chat.description ?? "noma'lum"}`;
+    return [
+      item(
+        `Telegram Bot API: javob bermadi (${code || "tarmoq"})`,
+        `https://t.me/${u}`,
+        `${why}. Qolgan Telegram modullari ishlashda davom etadi.`,
+        "api.telegram.org"
+      ),
+    ];
+  }
+  if (!chat.result) return [];
 
   const c = chat.result as TgChat;
   const title = c.title ?? [c.first_name, c.last_name].filter(Boolean).join(" ") ?? "";
@@ -314,7 +347,7 @@ export async function telegramBotApiSource(rawTarget: string): Promise<SearchRes
   ];
 
   // A'zolar/obunachilar soni — kanal/guruh uchun aniq raqam
-  const cnt = await fjson<{ result?: number }>(
+  const cnt = await botApiCall<{ result?: number }>(
     `${base}/getChatMemberCount?chat_id=@${encodeURIComponent(u)}`,
     10_000
   );

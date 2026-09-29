@@ -131,6 +131,21 @@ Oddiy qidiruv tizimlari t.me ichidagi kontentni deyarli indekslamaydi — shunin
 
 Telefon raqam bo'yicha Telegram'ni passiv tekshirish imkoni yo'q (Telegram shaxsiy raqamlarni yashiradi) — telefon uchun «Telegram izlari» va «Telefon izlari» modullari ishlaydi.
 
+#### BotFather'dan token olish — 5 daqiqa, mutlaqo bepul
+
+1. Telegram'da [@BotFather](https://t.me/BotFather) ni oching (rasmiy bot, tekshiring: verified belgisi bor).
+2. `/newbot` yozib yuboring.
+3. Botga ism bering (masalan `OSINT Radar`) — bu faqat ko'rinish uchun.
+4. Botga username bering (masalan `mening_osint_radar_bot` — `_bot` bilan tugashi shart).
+5. BotFather `1234567890:AAH...` ko'rinishida **token** beradi — nusxalang.
+6. Loyiha papkasidagi `.env` faylni ochib shu qatorni yozing (token shu yerda qoladi, GitHub'ga chiqmaydi):
+   ```
+   TELEGRAM_BOT_TOKEN=1234567890:AAH...
+   ```
+7. Skanerni qayta ishga tushiring (`npm run dev`) — «Telegram Bot API» moduli endi ANIQ javob beradi: chat id, turi, bio va aynan obunachilar raqami.
+
+Token noto'g'ri yozilsa skaner to'xtamaydi — «Telegram Bot API» moduli o'zi xatoni tushuntirib beradi (eskirgan token / chat topilmadi va h.k.). Diagnostika tugmasida ham token holati ko'rinadi.
+
 ### Telefon va ism qidiruvini yaxshilash
 
 - **«Telefon izlari» moduli** — raqamning barcha formatlari (E.164 `+998901234567`, milliy `90 123 45 67`, uzluksiz) bo'yicha parallel qidiruv: oddiy qidiruv ko'rmaydigan e'lon, ijtimoiy tarmoq va oqish izlarini topadi.
