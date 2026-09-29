@@ -517,6 +517,88 @@ export const OSINT_MODULES: OsintModuleDef[] = [
     },
     num: 6,
   },
+  {
+    id: "phone-mentions",
+    title: "Telefon eslatmalari",
+    icon: "Contact",
+    description:
+      "Raqam QAYERLARDA qoldirilgan: Telegram postlari, ijtimoiy tarmoq profillari, e'lonlar (OLX), biznes kataloglar, hujjat va bazalar — sayt bo'yicha aniq qidiruv",
+    appliesTo: ["phone"],
+    queries: (t) => {
+      const digits = t.replace(/\D/g, "");
+      const e164 =
+        digits.startsWith("998")
+          ? `+${digits}`
+          : digits.length === 9
+            ? `+998${digits}`
+            : `+${digits.replace(/^8/, "7")}`;
+      const nat = digits.startsWith("998") ? digits.slice(3) : digits;
+      const spaced = nat.length === 9
+        ? `${nat.slice(0, 2)} ${nat.slice(2, 5)} ${nat.slice(5, 7)} ${nat.slice(7, 9)}`
+        : nat;
+      return [
+        // Telegram post va kanallarda raqam qayerga yozilgan
+        `site:t.me ("${e164}" OR "${spaced}")`,
+        // Ijtimoiy tarmoqlarda profillar/postlar
+        `("${e164}" OR "${spaced}") (site:instagram.com OR site:facebook.com OR site:vk.com OR site:ok.ru)`,
+        // E'lonlar, biznes kataloglar, ma'lumotnomalar
+        `("${e164}" OR "${spaced}") (olx OR e'lon OR biznes OR kontakt OR menejer OR ma'lumotnoma OR katalog)`,
+      ];
+    },
+    deepQueries: (t) => {
+      const digits = t.replace(/\D/g, "");
+      const nat = digits.startsWith("998") ? digits.slice(3) : digits;
+      const e164 = digits.startsWith("998") ? `+${digits}` : `+998${digits}`;
+      const spaced = nat.length === 9
+        ? `${nat.slice(0, 2)} ${nat.slice(2, 5)} ${nat.slice(5, 7)} ${nat.slice(7, 9)}`
+        : nat;
+      const dashed = nat.length === 9
+        ? `${nat.slice(0, 2)}-${nat.slice(2, 5)}-${nat.slice(5, 7)}-${nat.slice(7, 9)}`
+        : nat;
+      return [
+        // Hujjatlar va jadvallar — kontakt bazalari, hisobotlar
+        `("${e164}" OR "${spaced}" OR "${dashed}") (filetype:pdf OR filetype:xlsx OR filetype:csv OR filetype:docx)`,
+        // Oqishlar va yopiq bazalarda eslatma
+        `("${e164}" OR "${spaced}") (pastebin OR leak OR oqish OR bazalar OR tayyorlangan)`,
+        // Forum va commentlar
+        `("${e164}" OR "${spaced}") (forum OR izoh OR comment OR sharh OR fikr)`,
+      ];
+    },
+    num: 6,
+  },
+  {
+    id: "username-mentions",
+    title: "Username joylari",
+    icon: "Fingerprint",
+    description:
+      "Shu username boshqa QAYERLARDA ishlatilgan: Instagram, TikTok, X/Twitter, GitHub, VK, bio-havolalar, forumlar — platforma bo'yicha aniq qidiruv",
+    appliesTo: ["username"],
+    queries: (t) => {
+      const u = t.replace(/^@/, "").trim();
+      return [
+        // Foto/video platformalar
+        `(site:instagram.com OR site:tiktok.com) "${u}"`,
+        // Microblog va kod platformalari
+        `(site:x.com OR site:twitter.com OR site:github.com OR site:gitlab.com) "${u}"`,
+        // Umumiy: username + profil atamalari
+        `"${u}" (profil OR bio OR account OR akkaunt OR foydalanuvchi)`,
+      ];
+    },
+    deepQueries: (t) => {
+      const u = t.replace(/^@/, "").trim();
+      return [
+        // MDH va boshqa platformalar
+        `(site:vk.com OR site:ok.ru OR site:pinterest.com OR site:medium.com OR site:steamcommunity.com) "${u}"`,
+        // Bio-havola sahifalari — barcha tarmoqlar bitta joyda
+        `"${u}" (site:linktr.ee OR site:beacons.ai OR site:bio.link OR site:carrd.co OR site:taptap.io)`,
+        // Forum, comment va eslatmalar
+        `"${u}" (site:reddit.com OR forum OR izoh OR comment OR sharh)`,
+        // Oqishlar va paket menejerlari
+        `"${u}" (pastebin OR leak OR dump OR npm OR pypi OR gist)`,
+      ];
+    },
+    num: 6,
+  },
 ];
 
 // Username uchun to'g'ridan-to'g'ri profil havolalari (passive tekshiruv uchun)
@@ -605,13 +687,65 @@ export function normalizeUrl(u: string): string {
 
 /** Matnga qarab maqsad turini avtomatik aniqlash (pivotlar uchun) */
 export function detectTargetType(text: string): TargetType {
-  const t = text.trim();
+  let t = text.trim();
+  // t.me/username yoki telegram.me/username havolasi → username
+  const tme = t.match(/^(?:https?:\/\/)?(?:www\.)?(?:t|telegram)\.me\/(?:s\/)?([a-z0-9._-]{3,32})\/?$/i);
+  if (tme && !/^\d+$/.test(tme[1])) return "username";
+  // @username kiritilgan bo'lsa — @ belgisini tashlab username deb olamiz
+  // (aks holda "@durov" "ism" deb aniqlanib, noto'g'ri modullar ishga tushardi)
+  t = t.replace(/^@+/, "").trim();
   if (/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(t)) return "email";
-  if (/^\+\d{7,15}$/.test(t.replace(/[\s().-]/g, ""))) return "phone";
+  // IP manzil — nuqtalar telefon formatlash belgilariga o'xshaydi, shuning uchun
+  // IP tekshiruvi telefondan OLDIN bo'lishi shart (aks holda 192.168.1.100 → telefon)
   if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(t)) return "ip";
+  // To'liq URL kiritilgan bo'lsa: platforma profili → username, oddiy sayt → domen
+  if (/^https?:\/\//i.test(t)) {
+    try {
+      const u = new URL(t);
+      const host = u.hostname.replace(/^www\./, "").toLowerCase();
+      const seg = u.pathname.split("/").filter(Boolean)[0];
+      const isPlatformHost =
+        PLATFORM_DOMAINS.has(host) || [...PLATFORM_DOMAINS].some((d) => host.endsWith(`.${d}`));
+      if (
+        seg &&
+        isPlatformHost &&
+        !PROFILE_URL_SEGMENTS.has(seg.toLowerCase()) &&
+        /^[a-z0-9._-]{3,32}$/i.test(seg) &&
+        !/^\d+$/.test(seg)
+      ) {
+        return "username";
+      }
+      if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(host)) return "domain";
+    } catch {
+      /* URL noto'g'ri — keyingi tekshiruvlarga o'tamiz */
+    }
+  }
+  // Telefon: "+" bilan yoki'siz — "+998901234567", "998901234567",
+  // "+998 90 123 45 67", "(+998) 90-123-45-67" — 7-15 xona raqam
+  const digits = t.replace(/[\s().-]/g, "");
+  if (/^\+?\d{7,15}$/.test(digits) && !/(\d)\1{5,}/.test(digits)) return "phone";
   if (/^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(t) && !t.includes(" ")) return "domain";
+  // 3-6 xonali qisqa raqamlar — ba'zi platformalarda raqamli username (VK id)
   if (!t.includes(" ") && /^[a-z0-9._-]{3,32}$/i.test(t) && !/^\+?\d+$/.test(t)) return "username";
   return "name";
+}
+
+/**
+ * Kiritilgan satrni maqsad turiga qarab tozalaydi:
+ * "@durov" → "durov", "t.me/durov" → "durov", "https://t.me/s/kanal" → "kanal".
+ * Boshqa turlarda satr o'zgarmaydi. Skaner so'rovlarida tozalangan qiymat ishlatiladi —
+ * "@belgisi" va "t.me/" prefiksi qidiruv sifatini pasaytiradi.
+ */
+export function normalizeTargetValue(kind: TargetType, raw: string): string {
+  const t = raw.trim();
+  if (kind === "username") {
+    const tme = t.match(
+      /^(?:https?:\/\/)?(?:www\.)?(?:t|telegram)\.me\/(?:s\/)?([a-z0-9._-]{3,32})\/?$/i
+    );
+    if (tme) return tme[1];
+    return t.replace(/^@+/, "").trim();
+  }
+  return t;
 }
 
 /**

@@ -12,6 +12,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -157,9 +158,15 @@ function stepSim(
       p.vx *= 0.85;
       p.vy *= 0.85;
       const v = Math.hypot(p.vx, p.vy);
-      if (v > 14) {
-        p.vx = (p.vx / v) * 14;
-        p.vy = (p.vy / v) * 14;
+      // Tezlik clamp pastroq — tugunlar muvozanat atrofida tebranib qaltiramaydi
+      if (v > 5.5) {
+        p.vx = (p.vx / v) * 5.5;
+        p.vy = (p.vy / v) * 5.5;
+      }
+      // Deyarli turg'un tugunni to'xtatamiz — mikro-qaltirash yo'qoladi
+      if (v < 0.06 && alpha < 0.08) {
+        p.vx = 0;
+        p.vy = 0;
       }
       p.x += p.vx;
       p.y += p.vy;
@@ -198,10 +205,10 @@ export function EntityGraph({
     return { ...graph, nodes, links };
   }, [graph, hiddenKinds]);
 
-  // Fizika holati — pozitsiyalar ref'da yuritiladi (simulyatsiya tezligi uchun),
-  // har kadr oxirida snapshot state'ga ko'chiriladi va render shundan o'qiydi
+  // Fizika holati — pozitsiyalar FAQAT ref'da yuritadi. DOM imperativ yangilanadi:
+  // har kadrda React re-render bo'lsa, 75+ tugun reconciliation qaltirash hosil
+  // qilardi (avvalgi posSnap state yondashuvi qaltirashning asosiy sababi edi).
   const posRef = useRef<Map<string, P>>(new Map());
-  const [posSnap, setPosSnap] = useState<Map<string, P>>(new Map());
   const alphaRef = useRef(0);
   const rafRef = useRef(0);
   const dataRef = useRef(visible);
@@ -209,17 +216,55 @@ export function EntityGraph({
     dataRef.current = visible;
   }, [visible]);
 
-  // Ko'rinish (pan/zoom) — ref asosiy manba, handler'larda stale bo'lmaydi
-  const [view, setViewState] = useState({ x: 0, y: 0, k: 1 });
-  const viewRef = useRef(view);
-  const setView = useCallback((v: { x: number; y: number; k: number }) => {
-    viewRef.current = v;
-    setViewState(v);
+  // SVG element ref'lari — rAF loop ularni imperativ yangilaydi
+  const nodeElsRef = useRef(new Map<string, SVGGElement>());
+  const linkElsRef = useRef(new Map<string, SVGLineElement>());
+  const viewportRef = useRef<SVGGElement | null>(null);
+
+  // Ko'rinish (pan/zoom) — faqat ref; DOM'ga setAttribute orqali qo'llanadi
+  // (re-render'siz — zoom va pan silliq 60fps)
+  const viewRef = useRef({ x: 0, y: 0, k: 1 });
+  const sizeRef = useRef({ w: 800, h: 480 });
+  // Zoom 1.35'dan oshsa sahifa yorliqlari ko'rinadi — chegara kesilgandagina re-render
+  const labelZoomRef = useRef(false);
+  const [labelZoom, setLabelZoom] = useState(false);
+
+  const applyView = useCallback(() => {
+    const v = viewRef.current;
+    const { w, h } = sizeRef.current;
+    viewportRef.current?.setAttribute(
+      "transform",
+      `translate(${w / 2 + v.x} ${h / 2 + v.y}) scale(${v.k})`
+    );
+    const shouldLabels = v.k > 1.35;
+    if (shouldLabels !== labelZoomRef.current) {
+      labelZoomRef.current = shouldLabels;
+      setLabelZoom(shouldLabels);
+    }
+  }, []);
+
+  // Barcha tugun/bog'lanish pozitsiyalarini DOM'ga yozish (paint oldidan ham)
+  const syncAll = useCallback(() => {
+    const pos = posRef.current;
+    for (const [id, el] of nodeElsRef.current) {
+      const p = pos.get(id);
+      if (p) el.setAttribute("transform", `translate(${p.x.toFixed(2)} ${p.y.toFixed(2)})`);
+    }
+    for (const l of dataRef.current.links) {
+      const el = linkElsRef.current.get(`${l.source}|${l.target}|${l.kind}`);
+      if (!el) continue;
+      const s = pos.get(l.source);
+      const t = pos.get(l.target);
+      if (!s || !t) continue;
+      el.setAttribute("x1", s.x.toFixed(2));
+      el.setAttribute("y1", s.y.toFixed(2));
+      el.setAttribute("x2", t.x.toFixed(2));
+      el.setAttribute("y2", t.y.toFixed(2));
+    }
   }, []);
 
   const [selected, setSelected] = useState<string | null>(null);
   const [hover, setHover] = useState<string | null>(null);
-  const [size, setSize] = useState({ w: 800, h: 480 });
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const dragRef = useRef<{ id: string; moved: boolean } | null>(null);
@@ -241,15 +286,22 @@ export function EntityGraph({
       if (a < 0.015 && !dragging) {
         alphaRef.current = 0;
         rafRef.current = 0;
+        // To'xtaganda qoldiq tezliklarni nolga tushiramiz — tugunlar jim qotadi
+        for (const p of posRef.current.values()) {
+          p.vx = 0;
+          p.vy = 0;
+        }
         return;
       }
       stepSim(dataRef.current.nodes, dataRef.current.links, posRef.current, Math.min(a, 1));
-      alphaRef.current = a * 0.992;
-      setPosSnap(new Map(posRef.current));
+      // 0.975 decay — ~2.5s da to'liq tinchalik (uzoq tebranish yo'q)
+      alphaRef.current = a * 0.975;
+      // Imperativ DOM yangilash — React re-render YO'Q (silliq 60fps)
+      syncAll();
       rafRef.current = requestAnimationFrame(loop);
     };
     rafRef.current = requestAnimationFrame(loop);
-  }, []);
+  }, [syncAll]);
 
   useEffect(() => {
     startRaf();
@@ -259,23 +311,27 @@ export function EntityGraph({
     };
   }, [startRaf]);
 
-  // Konteyner o'lchami
+  // Konteyner o'lchami — ref'da yuritiladi, o'zgarganda viewport qayta qo'llanadi
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const ro = new ResizeObserver((entries) => {
       const r = entries[0]?.contentRect;
-      if (r) setSize({ w: Math.max(320, r.width), h: Math.max(300, r.height) });
+      if (r) {
+        sizeRef.current = { w: Math.max(320, r.width), h: Math.max(300, r.height) };
+        applyView();
+      }
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [applyView]);
 
   const fitView = useCallback(() => {
     const { nodes } = dataRef.current;
     const pos = posRef.current;
     if (nodes.length < 2) {
-      setView({ x: 0, y: 0, k: 1 });
+      viewRef.current = { x: 0, y: 0, k: 1 };
+      applyView();
       return;
     }
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -289,31 +345,41 @@ export function EntityGraph({
     }
     const bw = Math.max(80, maxX - minX) + 140;
     const bh = Math.max(80, maxY - minY) + 140;
-    const k = clamp(Math.min(size.w / bw, size.h / bh), 0.35, 1.6);
-    setView({ x: (-((minX + maxX) / 2)) * k, y: (-((minY + maxY) / 2)) * k, k });
-  }, [size, setView]);
+    const { w, h } = sizeRef.current;
+    const k = clamp(Math.min(w / bw, h / bh), 0.35, 1.6);
+    viewRef.current = { x: (-((minX + maxX) / 2)) * k, y: (-((minY + maxY) / 2)) * k, k };
+    applyView();
+  }, [applyView]);
 
-  // Yangi tugunlarni spiral bo'ylab joylashtirish, eskilarni olib tashlash, qayta isitish
-  useEffect(() => {
+  // Yangi tugunlarni spiral bo'ylab joylashtirish, eskilarni olib tashlash.
+  // useLayoutEffect — pozitsiyalar paint'dan OLDIN DOM'ga yoziladi (bir kadrlik
+  // (0,0)da turish flash'i bo'lmaydi). Faqat YANGI tugun qo'shilsa qayta isitiladi —
+  // har modul yangilanishida butun graf qayta uchib chiqmasligi uchun.
+  useLayoutEffect(() => {
     const pos = posRef.current;
     const ids = new Set<string>();
+    let added = 0;
     visible.nodes.forEach((n, i) => {
       ids.add(n.id);
       if (!pos.has(n.id)) {
         const a = i * 2.399963;
         const r = 46 + Math.sqrt(i) * 36;
         pos.set(n.id, { x: Math.cos(a) * r, y: Math.sin(a) * r, vx: 0, vy: 0 });
+        added++;
       }
     });
     for (const id of [...pos.keys()]) if (!ids.has(id)) pos.delete(id);
-    alphaRef.current = Math.max(alphaRef.current, 0.9);
+    if (added > 0) alphaRef.current = Math.max(alphaRef.current, 0.5);
+    // Commit bo'lgan elementlarga pozitsiyalarni paint oldidan qo'llash
+    syncAll();
+    applyView();
     startRaf();
     // Foydalanuvchi pan/zoom qilmagan bo'lsa — avtomatik joylashtirish
     if (!userMovedRef.current && visible.nodes.length >= 4) {
       const t = setTimeout(fitView, 350);
       return () => clearTimeout(t);
     }
-  }, [visible, startRaf, fitView]);
+  }, [visible, startRaf, fitView, syncAll, applyView]);
 
   const scatter = useCallback(() => {
     const pos = posRef.current;
@@ -324,10 +390,10 @@ export function EntityGraph({
     });
     userMovedRef.current = false;
     alphaRef.current = 1;
+    syncAll();
     startRaf();
     setTimeout(fitView, 500);
-     
-  }, [visible, startRaf, fitView]);
+  }, [visible, startRaf, fitView, syncAll]);
 
   // Zoom g'ildirakda — kursor ostidagi nuqta joyida qoladi.
   // Konteynerga biriktiriladi (svg bo'sh holatda ham ishlashi uchun)
@@ -343,11 +409,12 @@ export function EntityGraph({
       const k2 = clamp(v.k * Math.exp(-e.deltaY * 0.0012), 0.35, 3.2);
       const s = k2 / v.k;
       userMovedRef.current = true;
-      setView({ x: mx - (mx - v.x) * s, y: my - (my - v.y) * s, k: k2 });
+      viewRef.current = { x: mx - (mx - v.x) * s, y: my - (my - v.y) * s, k: k2 };
+      applyView();
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [setView]);
+  }, [applyView]);
 
   const toGraph = useCallback((clientX: number, clientY: number) => {
     const rect = svgRef.current?.getBoundingClientRect();
@@ -395,7 +462,8 @@ export function EntityGraph({
         pan.moved = true;
         userMovedRef.current = true;
       }
-      setView({ x: pan.vx + dx, y: pan.vy + dy, k: viewRef.current.k });
+      viewRef.current = { x: pan.vx + dx, y: pan.vy + dy, k: viewRef.current.k };
+      applyView();
     }
   };
 
@@ -444,7 +512,9 @@ export function EntityGraph({
   const zoomBy = (factor: number) => {
     const v = viewRef.current;
     const k2 = clamp(v.k * factor, 0.35, 3.2);
-    setView({ x: v.x * (k2 / v.k), y: v.y * (k2 / v.k), k: k2 });
+    userMovedRef.current = true;
+    viewRef.current = { x: v.x * (k2 / v.k), y: v.y * (k2 / v.k), k: k2 };
+    applyView();
   };
 
   const searchKey =
@@ -524,14 +594,12 @@ export function EntityGraph({
                 setHover(null);
               }}
             >
-              <g transform={`translate(${size.w / 2 + view.x} ${size.h / 2 + view.y}) scale(${view.k})`}>
+              <g ref={viewportRef}>
                 {/* Fon — pan uchun tutash maydon */}
                 <rect x={-5000} y={-5000} width={10000} height={10000} fill="transparent" />
-                {/* Bog'lanishlar */}
-                {visible.links.map((l, i) => {
-                  const s = posSnap.get(l.source);
-                  const t = posSnap.get(l.target);
-                  if (!s || !t) return null;
+                {/* Bog'lanishlar — pozitsiyalar imperativ (syncAll), React faqat strukturani boshqaradi */}
+                {visible.links.map((l) => {
+                  const lKey = `${l.source}|${l.target}|${l.kind}`;
                   const hi = neighbors ? neighbors.has(l.source) && neighbors.has(l.target) : false;
                   const dim = neighbors ? 0.08 : 1;
                   const stroke =
@@ -542,11 +610,11 @@ export function EntityGraph({
                         : "#3f4f63";
                   return (
                     <line
-                      key={i}
-                      x1={s.x}
-                      y1={s.y}
-                      x2={t.x}
-                      y2={t.y}
+                      key={lKey}
+                      ref={(el) => {
+                        if (el) linkElsRef.current.set(lKey, el);
+                        else linkElsRef.current.delete(lKey);
+                      }}
                       stroke={stroke}
                       strokeWidth={hi ? 1.6 : 1}
                       strokeOpacity={hi ? 0.9 : l.kind === "found" ? 0.3 * dim : 0.38 * dim}
@@ -554,20 +622,21 @@ export function EntityGraph({
                     />
                   );
                 })}
-                {/* Tugunlar */}
+                {/* Tugunlar — transform imperativ (syncAll) yangilanadi */}
                 {visible.nodes.map((n) => {
-                  const p = posSnap.get(n.id);
-                  if (!p) return null;
                   const r = nodeR(n);
                   const color = KIND_COLOR[n.kind];
                   const isHi = neighbors ? neighbors.has(n.id) : true;
                   const dim = neighbors ? (isHi ? 1 : 0.16) : 1;
                   const Icon = n.kind !== "result" ? KIND_ICON[n.kind] : null;
-                  const showLabel = n.kind !== "result" || hover === n.id || selected === n.id || view.k > 1.35;
+                  const showLabel = n.kind !== "result" || hover === n.id || selected === n.id || labelZoom;
                   return (
                     <g
                       key={n.id}
-                      transform={`translate(${p.x} ${p.y})`}
+                      ref={(el) => {
+                        if (el) nodeElsRef.current.set(n.id, el);
+                        else nodeElsRef.current.delete(n.id);
+                      }}
                       data-node-id={n.id}
                       opacity={dim}
                       className="cursor-pointer"

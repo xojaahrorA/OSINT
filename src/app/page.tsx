@@ -51,6 +51,8 @@ import {
   MessageCircle,
   Binoculars,
   Waypoints,
+  Contact,
+  Fingerprint,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -83,6 +85,7 @@ import {
   OSINT_MODULES,
   TARGET_TYPES,
   detectTargetType,
+  normalizeTargetValue,
   extractPivots,
   normalizeUrl,
   anyModuleTitle,
@@ -143,6 +146,8 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   numlookup: PhoneCall,
   ipinfo: MapPin,
   "phone-trace": Smartphone,
+  "phone-mentions": Contact,
+  "username-mentions": Fingerprint,
 };
 
 const EXAMPLES: { type: TargetType; query: string }[] = [
@@ -157,7 +162,7 @@ const EXAMPLES: { type: TargetType; query: string }[] = [
 // Skaner chegaralari — rate-limit va beqarorlikka qarshi himoya.
 // Qo'shimcha qidiruvlar FAQAT foydalanuvchi tanlagan izlar bo'yicha ishlaydi —
 // tizim topgan ma'lumot bo'yicha o'zi qidiruv ishga tushirmaydi.
-const MAX_SCANS = 12; // bitta sessiyada eng ko'pi bilan 12 skaner (ko'p maqsadli batch bilan)
+const MAX_SCANS = 16; // bitta sessiyada eng ko'pi bilan 16 skaner (ko'p maqsadli batch bilan)
 
 // Parallel ishchilar — navbatdagi so'rovlarni bir vaqtda bajaradigan skanerlar.
 // Queue + worker pool arxitekturasi: so'rovlar navbatga tushadi, N ta ishchi
@@ -951,8 +956,10 @@ export default function Home() {
     const eng = engineRef.current;
     for (const q of queries) {
       const kind = detectTargetType(q);
-      eng.runSet.add(`${kind}:${q.toLowerCase()}`);
-      eng.queue.push({ kind, value: q, depth: 0 });
+      // "@durov" / "t.me/durov" → "durov" — tozalangan qiymat bilan qidiriladi
+      const value = normalizeTargetValue(kind, q);
+      eng.runSet.add(`${kind}:${value.toLowerCase()}`);
+      eng.queue.push({ kind, value, depth: 0 });
     }
 
     resultsRef.current = new Map();
@@ -990,8 +997,10 @@ export default function Home() {
       pushLog("info", `Navbatga qo'shildi: [${job.kind.toUpperCase()}] ${job.value}`);
     }
 
-    // Barcha so'rovlar "core" to'plam bilan parallel bajariladi — tezlik ustuvor
-    await processQueue("core", false);
+    // Barcha so'rovlar KENGAYTIRILGAN (extended) to'plam bilan parallel bajariladi —
+    // core + deep so'rovlar: username/telefon/ism har biri to'liq chuqur tekshiriladi
+    // (faqat core qisqa qidirardi — foydalanuvchi chuqur natija kutadi)
+    await processQueue("extended", false);
   };
 
   // ===== Asosiy oqim =====
@@ -1027,6 +1036,8 @@ export default function Home() {
     const query = raw;
     const scanType =
       ovType ?? (multiMode ? detectTargetType(query) : type);
+    // Username turida "@durov" / "t.me/durov" → "durov" tozalanadi
+    const queryNorm = normalizeTargetValue(scanType, query);
     if (query.length < 2) {
       toast({
         title: "Maqsad juda qisqa",
@@ -1043,13 +1054,13 @@ export default function Home() {
     engineRef.current = {
       stopped: false,
       queue: [],
-      runSet: new Set([`${scanType}:${query.toLowerCase()}`]),
+      runSet: new Set([`${scanType}:${queryNorm.toLowerCase()}`]),
       pending: [],
       knownUrls: new Set<string>(),
       scansDone: 0,
-      rootQuery: query,
+      rootQuery: queryNorm,
       rootType: scanType,
-      batchQueries: [query],
+      batchQueries: [queryNorm],
     };
     resultsRef.current = new Map();
     verdictsRef.current = {};
@@ -1066,16 +1077,16 @@ export default function Home() {
     setFocusIds([]);
     intelRef.current = [];
     setIntel([]);
-    setSearchedKeys(new Set([`${scanType}:${query.toLowerCase()}`]));
+    setSearchedKeys(new Set([`${scanType}:${queryNorm.toLowerCase()}`]));
     setLogs([]);
     setModules([]);
     setAiText("");
     setAiStatus("idle");
     setElapsed(0);
     setProgress(null);
-    setTarget({ type: scanType, query });
+    setTarget({ type: scanType, query: queryNorm });
     setBatchQueries([]);
-    saveRecent(scanType, query);
+    saveRecent(scanType, queryNorm);
     setStep("global");
 
     pushLog(
@@ -1084,7 +1095,7 @@ export default function Home() {
     );
 
     // 1-BOSQICH: dunyo bo'ylab — barcha ochiq tarmoqlar
-    const r1 = await runScanTarget({ kind: scanType, value: query, depth: 0 }, "core");
+    const r1 = await runScanTarget({ kind: scanType, value: queryNorm, depth: 0 }, "core");
     let eng = engineRef.current;
     if (eng.stopped) {
       setStep("stopped");
@@ -1106,7 +1117,7 @@ export default function Home() {
           `2-BOSQICH — ko'p natija bergan manbalar: ${top.map(moduleTitleOf).join(", ")}`
         );
         setStep("focused");
-        const r2 = await runScanTarget({ kind: scanType, value: query, depth: 0 }, "deep-only", top);
+        const r2 = await runScanTarget({ kind: scanType, value: queryNorm, depth: 0 }, "deep-only", top);
         if (engineRef.current.stopped) {
           setStep("stopped");
           return;

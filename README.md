@@ -164,7 +164,7 @@ Token noto'g'ri yozilsa skaner to'xtamaydi — «Telegram Bot API» moduli o'zi 
 Skaner topgan har bir narsa **bir-biriga ulangan interaktiv tarmoqda** ko'rinadi — Maltego'ning mashhur grafigiga o'xshab. Natijalar ustidagi «Graf / Ro'yxat» almashtirgichi orqali ochiladi:
 
 - **Maqsad markazda** — atrofida topilgan sahifalar, ularning atrofida ajratib olingan entitetlar (email, telefon, username, domen, IP, ism) — uch qatlamli bog'lanish tarmog'i
-- **Jonli force-directed graf** — skaner davom etar ekan yangi tugunlar paydo bo'ladi va tarmoq o'z-o'zidan tabiiy joylashadi (fizik simulatsiya: itarish + prujinalar)
+- **Jonli force-directed graf** — skaner davom etar ekan yangi tugunlar paydo bo'ladi va tarmoq o'z-o'zidan tabiiy joylashadi (fizik simulatsiya: itarish + prujinalar). Render to'liq imperativ: pozitsiyalar har kadrda to'g'ridan-to'g'ri DOM'ga yoziladi — React qayta renderi yo'q, shuning uchun zoom va pan **silliq 60fps**, tugunlar muvozanatga kelganda to'liq tinchaydi (qaltirash yo'q)
 - **Ranglar bilan ajratilgan turlar** — har bir tur o'z rangida (username — ko'k, email — sariq, telefon — binafsha, domen — firuza, IP — to'q sariq, ism — pushti); legenda chiplarini bosib filtrlash mumkin
 - **Tugunni bosing** — tafsilot paneli: qaysi modul topgan, necha marta uchragan, «Havolani ochish» (sahifa uchun) yoki «Shu bo'yicha qidirish» (entitet uchun — pivot qidiruv) tugmalari
 - **Tanlangan tugun ta'kidlanadi** — qolgan graf xiralashadi, faqat bevosita qo'shnilari yorqin ko'rinadi
@@ -173,7 +173,18 @@ Skaner topgan har bir narsa **bir-biriga ulangan interaktiv tarmoqda** ko'rinadi
 ### Telefon va ism qidiruvini yaxshilash
 
 - **«Telefon izlari» moduli** — raqamning barcha formatlari (E.164 `+998901234567`, milliy `90 123 45 67`, uzluksiz) bo'yicha parallel qidiruv: oddiy qidiruv ko'rmaydigan e'lon, ijtimoiy tarmoq va oqish izlarini topadi.
+- **«Telefon eslatmalari» moduli** — raqam QAYERLARDA qoldirilganini sayt bo'yicha aniq qidiradi: `site:t.me` postlari, Instagram/Facebook/VK/OK profillari, OLX e'lonlari, biznes kataloglar, PDF/XLSX/CSV hujjat va kontakt bazalari, forum izohlari.
+- **«Username joylari» moduli** — shu username boshqa QAYERLARDA ishlatilganini platforma bo'yicha topadi: Instagram/TikTok, X/Twitter, GitHub/GitLab, VK/OK/Pinterest/Medium/Steam, bio-havola sahifalari (linktr.ee, bio.link), Reddit/forumlar, npm/PyPI/pastebin oqishlari.
 - **Google Knowledge Graph (Serper)** — ism-familiya bo'yicha rasmiy ma'lumotnoma javobini beradi.
+
+### Ko'p maqsadli rejim — chuqur va aniq
+
+Ko'p maqsadli kiritishda (har qator bitta maqsad) har bir maqsad avtomatik to'g'ri turda va TO'LIQ chuqurlikda tekshiriladi:
+
+- **Turi avtomatik aniqlanadi** — `@durov` va `t.me/durov` → username, `998 90 123 45 67` (+ siz ham) → telefon, `https://instagram.com/durov` → username, `https://example.uz` → domen, «Pavel Durov» → ism. Avvalgi xato: `@` belgili username va `+`siz telefon «ism» deb aniqlanib, noto'g'ri modullar ishga tushardi.
+- **Kengaytirilgan (extended) so'rovlar** — ko'p maqsadli sessiyada har bir maqsad core + deep so'rovlar bilan to'liq tekshiriladi (targetiga qarab ~40-50 so'rov, avval faqat ~15 qisqa edi).
+- **Qiymat tozalanadi** — `@durov` / `t.me/durov` kiritilsa skaner `durov` bilan qidiradi — `@` belgisi qidiruv sifatini pasaytirardi.
+- **Barchasi parallel** — har maqsad o'z to'plami bilan parallel ishchilarda bajariladi, natijalar bitta graf va intel panelga yig'iladi.
 
 ### Diagnostika (npm run doctor)
 
