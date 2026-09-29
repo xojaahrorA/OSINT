@@ -53,6 +53,8 @@ import {
   Waypoints,
   Contact,
   Fingerprint,
+  PenLine,
+  Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -81,6 +83,10 @@ import {
   BookmarksSheet,
   type BookmarkItem,
 } from "@/components/osint/bookmarks-sheet";
+import {
+  HistorySheet,
+  type HistoryItem,
+} from "@/components/osint/history-sheet";
 import {
   OSINT_MODULES,
   TARGET_TYPES,
@@ -217,6 +223,14 @@ interface NewResult {
   moduleId?: string;
 }
 
+/** Tarix snapshot'iga saqlanadigan natija yozuvi — tiklashda qayta tiklanadi */
+interface SnapshotResultEntry {
+  key: string;
+  item: SearchResultItem;
+  moduleTitle: string;
+  moduleId?: string;
+}
+
 interface PivotJob {
   kind: TargetType;
   value: string;
@@ -341,6 +355,15 @@ export default function Home() {
 
   const [recent, setRecent] = useState<{ type: TargetType; query: string }[]>([]);
 
+  // Skaner tarixi — ma'lumotlar bazasiga saqlangan sessiyalar
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  // Qo'lda qo'shimcha qidiruv inputi — foydalanuvchi bilsa yana biror narsani
+  const [extraQuery, setExtraQuery] = useState("");
+  // Sahifa yangilanganda oxirgi sessiya FAQAT BIR MARTA avtomatik tiklanadi
+  const autoRestoredRef = useRef(false);
+
   // «Topilgan qo'shimcha ma'lumotlar» — skaner davomida yig'ilgan telefon,
   // email, ism-familiya va h.k. Alohida joyda saqlanadi, faqat foydalanuvchi
   // tanlagani bo'yicha qidiriladi.
@@ -373,7 +396,11 @@ export default function Home() {
     // foydalanuvchi kiritgan maqsadlar (o'zi topilgan ism qayta chiqmasligi uchun)
     batchQueries: [] as string[],
   });
-  const resultsRef = useRef<Map<string, { item: SearchResultItem; moduleTitle: string }>>(new Map());
+  const resultsRef = useRef<Map<string, { item: SearchResultItem; moduleTitle: string; moduleId?: string }>>(new Map());
+  // Modullar ro'yxati (moduleId + title) — snapshot saqlashda guruhlash uchun
+  const moduleListRef = useRef<{ moduleId: string; moduleTitle: string }[]>([]);
+  // AI matn ref nusxasi — sessiyani saqlashda o'qiladi (state closure eskirmasligi uchun)
+  const aiTextRef = useRef("");
   const verdictsRef = useRef<Record<string, VerdictInfo>>({});
   const skippedRef = useRef<Set<string>>(new Set());
   const statsRef = useRef<Record<string, number>>({});
@@ -388,6 +415,7 @@ export default function Home() {
       /* noop */
     }
     loadBookmarks();
+    void loadHistory(true); // oxirgi sessiyani avtomatik tiklaydi
   }, []);
 
   useEffect(() => {
@@ -413,6 +441,199 @@ export default function Home() {
       /* noop */
     }
     setBookmarksLoading(false);
+  };
+
+  // ===== Skaner tarixi (ma'lumotlar bazasi) =====
+  // loadHistory(true) — mount'da oxirgi sessiyani AVTOMATIK tiklaydi:
+  // sahifa yangilanganda topilgan ma'lumotlar yo'qolmaydi.
+  const loadHistory = async (restoreLatest = false) => {
+    setHistoryLoading(true);
+    try {
+      const res = await fetch("/api/history");
+      const data = await res.json();
+      if (Array.isArray(data.sessions)) {
+        setHistory(data.sessions);
+        if (restoreLatest && !autoRestoredRef.current && data.sessions.length > 0) {
+          autoRestoredRef.current = true;
+          await restoreSession(data.sessions[0]);
+        }
+      }
+    } catch {
+      /* noop */
+    }
+    setHistoryLoading(false);
+  };
+
+  // ===== Tarixdan sessiyani tiklash — to'liq holat qaytariladi =====
+  // Modullar, topilmalar, intel paneli, AI xulosa, verdict va skip holatlari
+  const restoreSession = async (item: HistoryItem) => {
+    try {
+      const res = await fetch(`/api/history?id=${encodeURIComponent(item.id)}`);
+      if (!res.ok) throw new Error("Sessiya topilmadi");
+      const data = await res.json();
+      const sess = data.session;
+      if (!sess) throw new Error("Sessiya bo'sh");
+      const snap = sess.snapshot ?? {};
+      const modulesList: ModuleResult[] = Array.isArray(snap.modules) ? snap.modules : [];
+      const resultEntries: SnapshotResultEntry[] = Array.isArray(snap.results) ? snap.results : [];
+      const intelList: IntelEntry[] = Array.isArray(snap.intel) ? snap.intel : [];
+      const verdictMap: Record<string, VerdictInfo> =
+        snap.verdicts && typeof snap.verdicts === "object" ? snap.verdicts : {};
+      const skippedList: string[] = Array.isArray(snap.skipped) ? snap.skipped : [];
+      const searchedList: string[] = Array.isArray(snap.searched) ? snap.searched : [];
+
+      aiAbortRef.current?.abort();
+      abortAllScans();
+      processingRef.current = false;
+
+      const queries: string[] =
+        Array.isArray(sess.queries) && sess.queries.length > 0
+          ? sess.queries
+          : [sess.rootQuery];
+
+      engineRef.current = {
+        stopped: false,
+        queue: [],
+        runSet: new Set<string>(searchedList.map((s) => String(s))),
+        pending: [],
+        knownUrls: new Set<string>(resultEntries.map((e) => e.key)),
+        scansDone: sess.scansDone ?? 0,
+        rootQuery: sess.rootQuery,
+        rootType: sess.rootType as TargetType,
+        batchQueries: queries,
+      };
+
+      resultsRef.current = new Map(
+        resultEntries.map((e) => [
+          e.key,
+          { item: e.item, moduleTitle: e.moduleTitle, moduleId: e.moduleId },
+        ])
+      );
+      verdictsRef.current = verdictMap;
+      skippedRef.current = new Set(skippedList);
+      statsRef.current = {};
+      moduleListRef.current = modulesList.map((m) => ({
+        moduleId: m.moduleId,
+        moduleTitle: m.moduleTitle,
+      }));
+      touchedTabRef.current = false;
+      logIdRef.current = 0;
+
+      setModules(modulesList);
+      setVerdicts({ ...verdictMap });
+      setSkipped(new Set(skippedList));
+      setReviewEntries([]);
+      setPendingCandidates([]);
+      setFocusIds([]);
+      setScansDone(sess.scansDone ?? 0);
+      intelRef.current = intelList;
+      setIntel(intelList);
+      setSearchedKeys(new Set(engineRef.current.runSet));
+      setLogs([]);
+      setAiText(sess.aiText ?? "");
+      aiTextRef.current = sess.aiText ?? "";
+      setAiStatus(sess.aiText ? "done" : "idle");
+      setElapsed(0);
+      setProgress(null);
+      setTarget({ type: sess.rootType, query: sess.rootQuery });
+      setBatchQueries(queries.length > 1 ? queries : []);
+      setStep("done");
+      setHistoryOpen(false);
+      pushLog(
+        "sys",
+        `Tarixdan tiklandi: "${sess.rootQuery}" — ${resultEntries.length} ta topilma, ${sess.scansDone ?? 0} skaner. Davom ettirish uchun pivot qo'shing.`
+      );
+      toast({
+        title: "Tarixdan tiklandi",
+        description: `${sess.rootQuery} — ${resultEntries.length} ta topilma`,
+      });
+    } catch (e) {
+      toast({
+        title: "Tiklashda xatolik",
+        description: (e as Error).message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  // ===== Sessiyani ma'lumotlar bazasiga saqlash =====
+  // To'liq holat nusxasi (modullar + topilmalar + intel + verdictlar) —
+  // keyin Tarixdan bir bosishda tiklanadi.
+  const buildSnapshot = () => {
+    const groups = new Map<string, ModuleResult>();
+    for (const meta of moduleListRef.current) {
+      groups.set(meta.moduleId, {
+        moduleId: meta.moduleId,
+        moduleTitle: meta.moduleTitle,
+        status: "done",
+        count: 0,
+        results: [],
+      });
+    }
+    const results: SnapshotResultEntry[] = [];
+    for (const [key, v] of resultsRef.current) {
+      results.push({
+        key,
+        item: v.item,
+        moduleTitle: v.moduleTitle,
+        moduleId: v.moduleId,
+      });
+      if (v.moduleId) {
+        const g = groups.get(v.moduleId);
+        if (g) {
+          g.results.push(v.item);
+          g.count++;
+        } else {
+          groups.set(v.moduleId, {
+            moduleId: v.moduleId,
+            moduleTitle: v.moduleTitle,
+            status: "done",
+            count: 1,
+            results: [v.item],
+          });
+        }
+      }
+    }
+    const eng = engineRef.current;
+    return {
+      modules: [...groups.values()],
+      results,
+      intel: intelRef.current,
+      verdicts: verdictsRef.current,
+      skipped: [...skippedRef.current],
+      searched: [...eng.runSet],
+    };
+  };
+
+  const persistSession = async (status: "done" | "stopped") => {
+    const eng = engineRef.current;
+    if (!eng.rootQuery || eng.scansDone === 0) return;
+    try {
+      const snapshot = buildSnapshot();
+      const res = await fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rootQuery: eng.rootQuery,
+          rootType: eng.rootType,
+          queries: eng.batchQueries.length > 0 ? eng.batchQueries : [eng.rootQuery],
+          status,
+          totalResults: resultsRef.current.size,
+          scansDone: eng.scansDone,
+          snapshot,
+          aiText: aiTextRef.current,
+        }),
+      });
+      if (res.ok) {
+        pushLog(
+          "sys",
+          `Skaner natijalari ma'lumotlar bazasiga saqlandi (${resultsRef.current.size} topilma) — sahifa yangilansa ham yo'qolmaydi.`
+        );
+        void loadHistory();
+      }
+    } catch {
+      /* saqlash muvaffaqiyatsiz — sessiya davom etaveradi */
+    }
   };
 
   const pushLog = (level: LogLine["level"], message: string) => {
@@ -489,6 +710,13 @@ export default function Home() {
                   },
                 ]
           );
+          // Snapshot uchun modullar ro'yxati (natijasiz modullar ham saqlanadi)
+          if (!moduleListRef.current.some((m) => m.moduleId === ev.moduleId)) {
+            moduleListRef.current = [
+              ...moduleListRef.current,
+              { moduleId: ev.moduleId!, moduleTitle: ev.moduleTitle ?? ev.moduleId! },
+            ];
+          }
           break;
         case "module_done": {
           const incoming = ev.results ?? [];
@@ -527,7 +755,7 @@ export default function Home() {
             if (!eng.knownUrls.has(k)) {
               eng.knownUrls.add(k);
               newResults.push({ key: k, item: r, moduleTitle: mTitle, moduleId: ev.moduleId });
-              resultsRef.current.set(k, { item: r, moduleTitle: mTitle });
+              resultsRef.current.set(k, { item: r, moduleTitle: mTitle, moduleId: ev.moduleId });
               added++;
             }
           }
@@ -799,6 +1027,7 @@ export default function Home() {
         ? "Qo'shimcha qidiruvlar yakunlandi — AI xulosa chiqarishingiz mumkin."
         : `Navbat yakunlandi (${done}/${totalInitial}) — «Topilgan qo'shimcha ma'lumotlar» paneldan davom etishingiz mumkin.`
     );
+    void persistSession("done");
   };
 
   const continueAfterReview = () => {
@@ -819,6 +1048,7 @@ export default function Home() {
       "info",
       "Qo'shimcha qidiruv faqat siz tanlagan ma'lumot bo'yicha boradi: panelda «Qidir» tugmasini bosing yoki yuqorida yangi maqsad kiriting."
     );
+    void persistSession("done");
   };
 
   // ===== Qo'lda pivot: "+" tugmasi yoki paneldagi Play =====
@@ -859,6 +1089,32 @@ export default function Home() {
       setType(kind);
       setInput(value);
       void startScan(kind, value);
+      return;
+    }
+    addPivotManual({ kind, value });
+  };
+
+  // ===== Qo'lda qo'shimcha qidiruv — foydalanuvchi bilsa yana biror narsani =====
+  // Kiritilgan qiymat turi avtomatik aniqlanadi (@username, telefon, email,
+  // ism-familiya, domen, IP) va faol sessiya navbatiga qo'shiladi.
+  const runExtraQuery = () => {
+    const raw = extraQuery.trim();
+    if (raw.length < 2) {
+      toast({
+        title: "Juda qisqa",
+        description: "Kamida 2 belgili qiymat kiriting.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const kind = detectTargetType(raw);
+    const value = normalizeTargetValue(kind, raw);
+    setExtraQuery("");
+    if (step === "idle" || !target) {
+      // Faol sessiya yo'q — yangi sessiya boshlaymiz
+      setType(kind);
+      setInput(raw);
+      void startScan(kind, raw);
       return;
     }
     addPivotManual({ kind, value });
@@ -929,6 +1185,7 @@ export default function Home() {
     setBatchInfo(null);
     setStep("stopped");
     pushLog("warn", "Foydalanuvchi sessiyani to'xtatdi.");
+    void persistSession("stopped");
   };
 
   // ===== Ko'p maqsadli (batch) sessiya — har so'rov navbatga, worker-pool bajaradi =====
@@ -966,6 +1223,7 @@ export default function Home() {
     verdictsRef.current = {};
     skippedRef.current = new Set();
     statsRef.current = {};
+    moduleListRef.current = [];
     touchedTabRef.current = false;
     logIdRef.current = 0;
 
@@ -981,6 +1239,7 @@ export default function Home() {
     setLogs([]);
     setModules([]);
     setAiText("");
+    aiTextRef.current = "";
     setAiStatus("idle");
     setElapsed(0);
     setProgress(null);
@@ -1066,6 +1325,7 @@ export default function Home() {
     verdictsRef.current = {};
     skippedRef.current = new Set();
     statsRef.current = {};
+    moduleListRef.current = [];
     touchedTabRef.current = false;
     logIdRef.current = 0;
 
@@ -1081,6 +1341,7 @@ export default function Home() {
     setLogs([]);
     setModules([]);
     setAiText("");
+    aiTextRef.current = "";
     setAiStatus("idle");
     setElapsed(0);
     setProgress(null);
@@ -1143,9 +1404,12 @@ export default function Home() {
         return;
       }
       pushLog("info", "Shubhali topilmalar panelda — tekshiring yoki davom eting.");
+      // Shu holat ham saqlanadi — sahifa yangilansa foydalanuvchi davom etishi mumkin
+      void persistSession("done");
     } else {
       setStep("done");
       pushLog("sys", "Tez skaner yakunlandi — «+» orqali istalgan iz bo'yicha chuqur qidirishingiz mumkin.");
+      void persistSession("done");
     }
   };
 
@@ -1173,7 +1437,10 @@ export default function Home() {
     const ctrl = new AbortController();
     aiAbortRef.current = ctrl;
 
-    if (!question) setAiText("");
+    if (!question) {
+      setAiText("");
+      aiTextRef.current = "";
+    }
     setAiStatus("streaming");
 
     try {
@@ -1200,8 +1467,11 @@ export default function Home() {
         if (done) break;
         acc += decoder.decode(value, { stream: true });
         setAiText(acc);
+        aiTextRef.current = acc;
       }
       setAiStatus("done");
+      // AI xulosa bilan birga sessiya qayta saqlanadi — tarixda to'liq turadi
+      void persistSession("done");
     } catch (e) {
       if ((e as Error).name === "AbortError") return;
       setAiStatus("error");
@@ -1263,6 +1533,36 @@ export default function Home() {
     }
   };
 
+  // ===== Tarixni o'chirish — bitta yoki barchasi =====
+  const removeHistory = async (id: string) => {
+    try {
+      const res = await fetch(`/api/history?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setHistory((prev) => prev.filter((h) => h.id !== id));
+        toast({ title: "O'chirildi", description: "Sessiya bazadan o'chirildi." });
+      }
+    } catch {
+      toast({ title: "O'chirish xatosi", variant: "destructive" });
+    }
+  };
+
+  const removeAllHistory = async () => {
+    if (!window.confirm("Barcha skaner tarixi ma'lumotlar bazasidan o'chiriladi — davom etamizmi?")) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/history?all=1", { method: "DELETE" });
+      if (res.ok) {
+        setHistory([]);
+        toast({ title: "Tarix tozalandi", description: "Barcha sessiyalar o'chirildi." });
+      }
+    } catch {
+      toast({ title: "O'chirish xatosi", variant: "destructive" });
+    }
+  };
+
   const totalResults = modules.reduce((acc, m) => acc + m.count, 0);
   const currentTypeLabel = TARGET_TYPES.find((t) => t.value === type)?.label ?? type;
   const stats: SourceStat[] = modules.map((m) => ({
@@ -1309,6 +1609,25 @@ export default function Home() {
                 )}
               </Button>
             </BookmarksSheet>
+            <HistorySheet
+              open={historyOpen}
+              onOpenChange={setHistoryOpen}
+              sessions={history}
+              loading={historyLoading}
+              onOpenSession={(item) => void restoreSession(item)}
+              onRemove={removeHistory}
+              onRemoveAll={removeAllHistory}
+            >
+              <Button variant="outline" size="sm" className="gap-2 relative">
+                <History className="w-4 h-4" />
+                <span className="hidden sm:inline">Tarix</span>
+                {history.length > 0 && (
+                  <Badge className="h-5 px-1.5 text-[10px] bg-sky-500 text-white">
+                    {history.length}
+                  </Badge>
+                )}
+              </Button>
+            </HistorySheet>
           </div>
         </div>
       </header>
@@ -1643,6 +1962,52 @@ export default function Home() {
                 onSearchAll={runIntelSearchAll}
                 searchAllCap={MAX_SCANS - scansDone}
               />
+
+              {/* Qo'lda qo'shimcha qidiruv — foydalanuvchi bilsa yana biror narsani,
+                  shu yerga yozib navbatga qo'shadi: username, telefon, email, ism... */}
+              <Card className="p-4">
+                <div className="flex items-center gap-2">
+                  <div className="flex w-8 h-8 rounded-lg bg-primary/10 border border-primary/30 items-center justify-center shrink-0">
+                    <PenLine className="w-4 h-4 text-primary" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold leading-tight">
+                      Qo&apos;lda qidiruv qo&apos;shish
+                    </p>
+                    <p className="text-[11px] text-muted-foreground leading-tight">
+                      Yana biror narsani bilibsiz — shu yerda qo&apos;shib qidiring
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <Input
+                    value={extraQuery}
+                    onChange={(e) => setExtraQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        runExtraQuery();
+                      }
+                    }}
+                    placeholder="@username, +998901234567, email, ism, domen..."
+                    className="h-9 text-sm font-mono"
+                    aria-label="Qo'shimcha qidiruv kiritish"
+                  />
+                  <Button
+                    size="sm"
+                    className="gap-1.5 shrink-0 h-9"
+                    onClick={runExtraQuery}
+                    aria-label="Qo'shimcha qidiruvni navbatga qo'shish"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Qidirish
+                  </Button>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-2 leading-relaxed">
+                  Tur avtomatik aniqlanadi: sessiya davomida navbatga qo&apos;shiladi
+                  ({MAX_SCANS} gacha), sessiya yo&apos;q bo&apos;lsa yangi skaner boshlanadi.
+                </p>
+              </Card>
 
               <DeepPanel
                 mode={mode}

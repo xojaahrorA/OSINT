@@ -19,3 +19,24 @@ model Bookmark {
 
   @@unique([url, query])
 }
+
+// Skaner sessiyasi tarixi — har bir qidirilgan shaxs/maqsad bitta yozuvda
+// to'liq saqlanadi. Sahifa yangilansa ham natijalar yo'qolmaydi: oxirgi
+// sessiya avtomatik tiklanadi, eski sessiyalar "Tarix" panelida turadi.
+model ScanSession {
+  id           String   @id @default(cuid())
+  rootQuery    String   // asosiy maqsad (batch rejimda birinchi so'rov)
+  rootType     String   // username | email | phone | name | domain | ip
+  queriesJson  String?  // batch so'rovlar ro'yxati (JSON massiv)
+  status       String   @default("done") // done | stopped
+  totalResults Int      @default(0)
+  scansDone    Int      @default(0)
+  // To'liq holat nusxasi (JSON): modules, results, intel, verdicts, skipped
+  snapshotJson String?
+  aiText       String?  // AI xulosa matni
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([rootQuery, rootType])
+  @@index([updatedAt])
+}

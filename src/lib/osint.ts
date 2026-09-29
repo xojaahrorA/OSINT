@@ -513,6 +513,8 @@ export const OSINT_MODULES: OsintModuleDef[] = [
       return [
         `"${e164}" (oqish OR pastebin OR leak OR ma'lumotlar bazasi)`,
         `${nat} (SMS OR kod OR tasdiqlash OR ro'yxatdan o'tish)`,
+        // Telegram ekosistemasi: kanal/post bazalarida raqam izi
+        `"${e164}" (site:t.me OR site:telegra.ph OR site:tgstat.ru OR site:lyzem.com)`,
       ];
     },
     num: 6,
@@ -522,7 +524,7 @@ export const OSINT_MODULES: OsintModuleDef[] = [
     title: "Telefon eslatmalari",
     icon: "Contact",
     description:
-      "Raqam QAYERLARDA qoldirilgan: Telegram postlari, ijtimoiy tarmoq profillari, e'lonlar (OLX), biznes kataloglar, hujjat va bazalar — sayt bo'yicha aniq qidiruv",
+      "Raqam QAYERLARDA qoldirilgan: Telegram post va kanallar, tgstat/lyzem Telegram qidiruvi, ijtimoiy tarmoq profillari (Instagram, Facebook, VK), WhatsApp/Viber guruhlar, e'lonlar (OLX), biznes kataloglar, hujjat va bazalar",
     appliesTo: ["phone"],
     queries: (t) => {
       const digits = t.replace(/\D/g, "");
@@ -536,13 +538,21 @@ export const OSINT_MODULES: OsintModuleDef[] = [
       const spaced = nat.length === 9
         ? `${nat.slice(0, 2)} ${nat.slice(2, 5)} ${nat.slice(5, 7)} ${nat.slice(7, 9)}`
         : nat;
+      const dashed = nat.length === 9
+        ? `${nat.slice(0, 2)}-${nat.slice(2, 5)}-${nat.slice(5, 7)}-${nat.slice(7, 9)}`
+        : nat;
+      const anyFmt = `("${e164}" OR "${spaced}" OR "${dashed}")`;
       return [
         // Telegram post va kanallarda raqam qayerga yozilgan
-        `site:t.me ("${e164}" OR "${spaced}")`,
+        `site:t.me ${anyFmt}`,
+        // Telegram qidiruv tizimlari — tgstat, lyzem, telemetr kanal bazalari
+        `${anyFmt} (site:tgstat.uz OR site:tgstat.ru OR site:lyzem.com OR site:telemetr.io)`,
         // Ijtimoiy tarmoqlarda profillar/postlar
-        `("${e164}" OR "${spaced}") (site:instagram.com OR site:facebook.com OR site:vk.com OR site:ok.ru)`,
+        `${anyFmt} (site:instagram.com OR site:facebook.com OR site:vk.com OR site:ok.ru)`,
+        // WhatsApp/Viber/Signal guruh va chatlarda
+        `${anyFmt} (whatsapp OR viber OR signal) (guruh OR chat OR a'zo OR qo'shildi)`,
         // E'lonlar, biznes kataloglar, ma'lumotnomalar
-        `("${e164}" OR "${spaced}") (olx OR e'lon OR biznes OR kontakt OR menejer OR ma'lumotnoma OR katalog)`,
+        `${anyFmt} (olx OR e'lon OR biznes OR kontakt OR menejer OR ma'lumotnoma OR katalog)`,
       ];
     },
     deepQueries: (t) => {
@@ -555,13 +565,18 @@ export const OSINT_MODULES: OsintModuleDef[] = [
       const dashed = nat.length === 9
         ? `${nat.slice(0, 2)}-${nat.slice(2, 5)}-${nat.slice(5, 7)}-${nat.slice(7, 9)}`
         : nat;
+      const anyFmt = `("${e164}" OR "${spaced}" OR "${dashed}")`;
       return [
         // Hujjatlar va jadvallar — kontakt bazalari, hisobotlar
-        `("${e164}" OR "${spaced}" OR "${dashed}") (filetype:pdf OR filetype:xlsx OR filetype:csv OR filetype:docx)`,
+        `${anyFmt} (filetype:pdf OR filetype:xlsx OR filetype:csv OR filetype:docx)`,
         // Oqishlar va yopiq bazalarda eslatma
-        `("${e164}" OR "${spaced}") (pastebin OR leak OR oqish OR bazalar OR tayyorlangan)`,
+        `${anyFmt} (pastebin OR leak OR oqish OR bazalar OR tayyorlangan)`,
         // Forum va commentlar
-        `("${e164}" OR "${spaced}") (forum OR izoh OR comment OR sharh OR fikr)`,
+        `${anyFmt} (forum OR izoh OR comment OR sharh OR fikr)`,
+        // Telegra.ph postlari — Telegram ekosistemasi ichidagi uzun matnlar
+        `site:telegra.ph ${anyFmt}`,
+        // Messenjer usernameligi: raqam bio/desc maydonlarida
+        `${anyFmt} (bio OR tavsif OR about OR contact OR aloka)`,
       ];
     },
     num: 6,
