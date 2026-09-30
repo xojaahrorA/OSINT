@@ -24,7 +24,9 @@ import {
   Maximize2,
   Minus,
   Network as NetworkIcon,
+  Orbit,
   Phone,
+  PinOff,
   Plus,
   Radar,
   RefreshCcw,
@@ -265,6 +267,9 @@ export function EntityGraph({
 
   const [selected, setSelected] = useState<string | null>(null);
   const [hover, setHover] = useState<string | null>(null);
+  // Maltego "Pin Entities": tortib qo'yilgan tugunlar o'sha joyda qoladi.
+  // Set faqat pin holati o'zgarganda yangilanadi — har kadrda emas.
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const dragRef = useRef<{ id: string; moved: boolean } | null>(null);
@@ -389,11 +394,80 @@ export function EntityGraph({
       pos.set(n.id, { x: Math.cos(a) * r, y: Math.sin(a) * r, vx: 0, vy: 0 });
     });
     userMovedRef.current = false;
+    setPinnedIds(new Set());
     alphaRef.current = 1;
     syncAll();
     startRaf();
     setTimeout(fitView, 500);
   }, [visible, startRaf, fitView, syncAll]);
+
+  // Maltego "Circular Layout": maqsad markazda, entitetlar ichki doirada,
+  // sahifalar tashqi doirada. Maltego'da avtomatik joylashuvlar BIR MARTALIK —
+  // natija joyida qoladi (fizika ishga tushmaydi), shuning uchun hammasi
+  // qotqichlanadi. "Barchasini bo'shatish" organik harakatni qaytaradi.
+  const circleLayout = useCallback(() => {
+    const nodes = dataRef.current.nodes;
+    const pos = posRef.current;
+    const place = (arr: GraphNode[], radius: number) => {
+      arr.forEach((n, i) => {
+        const a = (i / Math.max(arr.length, 1)) * Math.PI * 2 - Math.PI / 2;
+        const x = Math.cos(a) * radius;
+        const y = Math.sin(a) * radius;
+        pos.set(n.id, { x, y, vx: 0, vy: 0, fx: x, fy: y });
+      });
+    };
+    const target = nodes.find((n) => n.kind === "target");
+    if (target) pos.set(target.id, { x: 0, y: 0, vx: 0, vy: 0, fx: 0, fy: 0 });
+    const entities = nodes.filter((n) => n.kind !== "target" && n.kind !== "result");
+    const results = nodes.filter((n) => n.kind === "result");
+    place(entities, 150 + Math.min(entities.length, 14) * 7);
+    place(results, 310 + Math.min(results.length, 18) * 9);
+    setPinnedIds(new Set(nodes.map((n) => n.id)));
+    userMovedRef.current = false;
+    // Fizikani to'xtatamiz — deterministik layout joyida qoladi
+    alphaRef.current = 0;
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+    }
+    syncAll();
+    fitView();
+  }, [fitView, syncAll]);
+
+  // Bir tugunning qotqichini bo'shatish — yana fizika bo'yicha harakatlanadi
+  const unpinNode = useCallback(
+    (id: string) => {
+      const p = posRef.current.get(id);
+      if (p && (p.fx !== undefined || p.fy !== undefined)) {
+        posRef.current.set(id, { x: p.x, y: p.y, vx: 0, vy: 0 });
+        alphaRef.current = Math.max(alphaRef.current, 0.5);
+        startRaf();
+      }
+      setPinnedIds((cur) => {
+        if (!cur.has(id)) return cur;
+        const n = new Set(cur);
+        n.delete(id);
+        return n;
+      });
+    },
+    [startRaf]
+  );
+
+  // Maltego "Unpin All" — barcha qotqichlar bo'shaydi, organik joylashuv davom etadi
+  const unpinAll = useCallback(() => {
+    let any = false;
+    for (const [id, p] of posRef.current) {
+      if (p.fx !== undefined || p.fy !== undefined) {
+        posRef.current.set(id, { x: p.x, y: p.y, vx: 0, vy: 0 });
+        any = true;
+      }
+    }
+    if (any) {
+      alphaRef.current = Math.max(alphaRef.current, 0.5);
+      startRaf();
+    }
+    setPinnedIds(new Set());
+  }, [startRaf]);
 
   // Zoom g'ildirakda — kursor ostidagi nuqta joyida qoladi.
   // Konteynerga biriktiriladi (svg bo'sh holatda ham ishlashi uchun)
@@ -471,8 +545,24 @@ export function EntityGraph({
     const drag = dragRef.current;
     if (drag) {
       const p = posRef.current.get(drag.id);
-      if (p) posRef.current.set(drag.id, { x: p.x, y: p.y, vx: 0, vy: 0 });
-      if (!drag.moved) setSelected((cur) => (cur === drag.id ? null : drag.id));
+      if (p) {
+        if (drag.moved) {
+          // MALTEGO XULQI: tortib qo'yilgan tugun o'sha joyda QOTQICHLANADI —
+          // prujina uni orqaga qaytarmaydi. Ikki marta bosish yoki
+          // «Barchasini bo'shatish» bilan yana bo'shatiladi.
+          posRef.current.set(drag.id, { x: p.x, y: p.y, vx: 0, vy: 0, fx: p.x, fy: p.y });
+          setPinnedIds((cur) => {
+            if (cur.has(drag.id)) return cur;
+            const n = new Set(cur);
+            n.add(drag.id);
+            return n;
+          });
+        } else {
+          // Sudrashsiz bosish — tanlash; mavjud qotqich saqlanadi
+          posRef.current.set(drag.id, { x: p.x, y: p.y, vx: 0, vy: 0, fx: p.fx, fy: p.fy });
+          setSelected((cur) => (cur === drag.id ? null : drag.id));
+        }
+      }
       dragRef.current = null;
       return;
     }
@@ -539,6 +629,7 @@ export function EntityGraph({
         )}
         <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
           {visible.nodes.length} tugun · {visible.links.length} bog&apos;lanish
+          {pinnedIds.size > 0 && <> · {pinnedIds.size} qadalgan</>}
         </span>
       </div>
 
@@ -588,6 +679,18 @@ export function EntityGraph({
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
+              // MUHIM: brauzer tugun ustida sudrash boshlanganda NATIVE
+              // drag-and-drop'ni o'zlashtirib oladi — pointercancel kelib,
+              // pointer oqimi o'ladi (pointermove/pointerup hech qachon
+              // kelmaydi, dragRef qotib qoladi). dragstart'ni bekor qilish
+              // bilan native drag hech qachon boshlanmaydi.
+              onDragStart={(e) => e.preventDefault()}
+              // Tashqi sabablarga ko'ra (masalan OS darajadagi jamlash)
+              // pointercancel kelsa — drag/pan holatini tozalaymiz
+              onPointerCancel={() => {
+                dragRef.current = null;
+                panRef.current = null;
+              }}
               onPointerLeave={() => {
                 dragRef.current = null;
                 panRef.current = null;
@@ -642,10 +745,25 @@ export function EntityGraph({
                       className="cursor-pointer"
                       onPointerEnter={() => setHover(n.id)}
                       onPointerLeave={() => setHover((h) => (h === n.id ? null : h))}
+                      onDoubleClick={() => unpinNode(n.id)}
                     >
-                      <title>{n.label}</title>
+                      <title>
+                        {n.label}
+                        {pinnedIds.has(n.id) ? " (qadalgan — bo'shatish uchun ikki marta bosing)" : ""}
+                      </title>
                       {selected === n.id && (
                         <circle r={r + 4.5} fill="none" stroke={color} strokeWidth={1.6} opacity={0.8} />
+                      )}
+                      {pinnedIds.has(n.id) && (
+                        <circle
+                          cx={r * 0.72}
+                          cy={-r * 0.72}
+                          r={3.2}
+                          fill="#f59e0b"
+                          stroke="rgba(0,0,0,0.5)"
+                          strokeWidth={1}
+                          className="pointer-events-none"
+                        />
                       )}
                       <circle
                         r={r}
@@ -701,8 +819,27 @@ export function EntityGraph({
               >
                 <Maximize2 className="w-3.5 h-3.5" />
               </Button>
-              <Button variant="secondary" size="icon" className="h-7 w-7" title="Qayta joylash" onClick={scatter}>
+              <Button variant="secondary" size="icon" className="h-7 w-7" title="Qayta joylash (organik)" onClick={scatter}>
                 <RefreshCcw className="w-3.5 h-3.5" />
+              </Button>
+              <Button
+                variant="secondary"
+                size="icon"
+                className="h-7 w-7"
+                title="Doira bo'ylab joylash (Maltego circular layout)"
+                onClick={circleLayout}
+              >
+                <Orbit className="w-3.5 h-3.5" />
+              </Button>
+              <Button
+                variant="secondary"
+                size="icon"
+                className="h-7 w-7"
+                title="Barcha qadalganlarni bo'shatish — organik harakat qaytadi"
+                disabled={pinnedIds.size === 0}
+                onClick={unpinAll}
+              >
+                <PinOff className="w-3.5 h-3.5" />
               </Button>
             </div>
 
@@ -786,6 +923,17 @@ export function EntityGraph({
                         </Badge>
                       )}
                     </>
+                  )}
+                  {pinnedIds.has(selectedNode.id) && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs gap-1.5 text-amber-400 hover:text-amber-300"
+                      onClick={() => unpinNode(selectedNode.id)}
+                    >
+                      <PinOff className="w-3.5 h-3.5" />
+                      Bo&apos;shatish
+                    </Button>
                   )}
                 </div>
               </div>
