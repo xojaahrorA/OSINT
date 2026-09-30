@@ -17,6 +17,7 @@ import {
 } from "@/lib/search-engines";
 import { DIRECT_RUNS, cleanDomain } from "@/lib/osint-sources";
 import { verifyProfileLinks } from "@/lib/profile-verify";
+import { nameVariants } from "@/lib/name-variants";
 import {
   premiumKeyMissing,
   premiumFind,
@@ -222,6 +223,13 @@ export async function POST(req: NextRequest) {
           "info",
           "Ism-familiya yagona identifikator emas — bir xil ismda ko'p odam bo'ladi. Aniqlik uchun: ko'p maqsadli rejimda username/telefon bilan BIRGA bering, natijalarda «Tasdiqlangan» belgisini kuzating yoki CHUQUR rejimda AI solishtirishni yoqing."
         );
+        const vs = nameVariants(query);
+        if (vs.length > 1) {
+          log(
+            "info",
+            `[Ism variantlari] ${vs.length} ta yozilish tekshiriladi: ${vs.slice(0, 6).join(" · ")}${vs.length > 6 ? " ..." : ""}`
+          );
+        }
       }
       if (directPlanned.length > 0) {
         log(

@@ -1,6 +1,11 @@
 // OSINT Radar — umumiy tiplar va modul ta'riflari
 // Bu fayl server (API) va klient tomonida ishlatiladi, SDK import QILINMAYDI.
 
+import {
+  nameVariantCoreQueries,
+  nameVariantDeepQueries,
+} from "./name-variants";
+
 export type TargetType =
   | "username"
   | "email"
@@ -144,6 +149,14 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
     title: "GitHub commitlari",
     icon: "Github",
     description: "Bu email bilan yozilgan ommaviy commitlar — haqiqiy ism va username aniqlanadi",
+    appliesTo: ["email"],
+  },
+  {
+    id: "email-username",
+    title: "Email → Username",
+    icon: "UserRoundSearch",
+    description:
+      "Maltego uslubi: email lokal qismi (@dan oldingi) ko'pincha username ham bo'ladi — 12 platformada JONLI tekshiriladi, faqat mavjud profillar qoladi",
     appliesTo: ["email"],
   },
   // ---- Username / Telefon / Ism: OSINT Framework bepul manbalari ----
@@ -550,6 +563,10 @@ export const OSINT_MODULES: OsintModuleDef[] = [
       return [
         // Telegram post va kanallarda raqam qayerga yozilgan
         `site:t.me ${anyFmt}`,
+        // Instagram post/komentlari bevosita indekslanmaydi — lekin mirror
+        // viewer saytlar (picuki/imginn/greatfon) indekslanadi va raqam
+        // bio/post matnini ko'rsatadi
+        `${anyFmt} (site:picuki.com OR site:imginn.com OR site:greatfon.com OR site:instanavigation.com)`,
         // Telegram qidiruv tizimlari — tgstat, lyzem, telemetr kanal bazalari
         `${anyFmt} (site:tgstat.uz OR site:tgstat.ru OR site:lyzem.com OR site:telemetr.io)`,
         // Ijtimoiy tarmoqlarda profillar/postlar
@@ -579,6 +596,10 @@ export const OSINT_MODULES: OsintModuleDef[] = [
       return [
         // WhatsApp/Viber havola formatlari — wa.me raqamni "plus"siz indekslaydi
         `(site:wa.me OR site:api.whatsapp.com OR site:viber.com) ${digitsNoPlus}`,
+        // Instagram mirror-viewerlarda (post/bio izlari)
+        `${anyFmt} (site:picuki.com OR site:imginn.com OR site:greatfon.com)`,
+        // Telegram kataloglari — tlgrm, tgstat.com, kanal ro'yxatlari
+        `${anyFmt} (site:tlgrm.eu OR site:tgstat.com OR site:telegram-store.com OR site:telemetr.me)`,
         // Hujjatlar va jadvallar — kontakt bazalari, hisobotlar
         `${anyFmt} (filetype:pdf OR filetype:xlsx OR filetype:csv OR filetype:docx OR filetype:vcf)`,
         // Oqishlar va yopiq bazalarda eslatma
@@ -622,6 +643,56 @@ export const OSINT_MODULES: OsintModuleDef[] = [
         `"${u}" (site:reddit.com OR forum OR izoh OR comment OR sharh)`,
         // Oqishlar va paket menejerlari
         `"${u}" (pastebin OR leak OR dump OR npm OR pypi OR gist)`,
+      ];
+    },
+    num: 6,
+  },
+  {
+    id: "name-variants",
+    title: "Ism variantlari",
+    icon: "Shuffle",
+    description:
+      "Ism-familiya BARCHA yozilishlarida: almashtirilgan tartib (Familiya Ism), kirillcha (Камрон Каримов), oʻ/gʻ apostrof shakllari, bosh harf qisqartma (K. Karimov) — o'xshash yozuvlar ham topiladi",
+    appliesTo: ["name"],
+    queries: (t) => nameVariantCoreQueries(t),
+    deepQueries: (t) => nameVariantDeepQueries(t),
+    num: 6,
+  },
+  {
+    id: "email-mentions",
+    title: "Email qoldirilgan joylar",
+    icon: "AtSign",
+    description:
+      "Email QAYERLARDA qoldirilgan: Instagram/Facebook profillar, Telegram kanal-postlar, GitHub commit/issue, LinkedIn, kontakt sahifalar, rezyume/CV, hujjatlar (pdf/xlsx/csv), forumlar — email orqali odamning barcha izlari",
+    appliesTo: ["email"],
+    queries: (t) => {
+      const e = t.toLowerCase();
+      const local = e.split("@")[0] ?? "";
+      return [
+        // Ijtimoiy tarmoqlarda profil/bio ichida email
+        `"${e}" (site:instagram.com OR site:facebook.com OR site:vk.com OR site:ok.ru)`,
+        // Telegram ekosistemi: kanallar, postlar, telegra.ph maqolalari
+        `"${e}" (site:t.me OR site:telegram.me OR site:telegra.ph)`,
+        // Kod platformalari — commit muallifi, issue, profil bio
+        `"${e}" (site:github.com OR site:gitlab.com OR site:stackoverflow.com)`,
+        // Kontakt, CV, portfolio — odam o'zi qoldirgan sahifalar
+        `"${e}" (kontakt OR aloqa OR rezyume OR CV OR portfolio OR xodimlar)`,
+      ];
+    },
+    deepQueries: (t) => {
+      const e = t.toLowerCase();
+      const local = e.split("@")[0] ?? "";
+      const localQ = local.length >= 3 ? [`${local}@` , `"${local}" (username OR profil OR akkaunt)`] : [];
+      return [
+        // Hujjatlar va kontakt bazalari — xodimlar ro'yxati, hisobotlar
+        `"${e}" (filetype:pdf OR filetype:xlsx OR filetype:csv OR filetype:docx)`,
+        // Ishbilarmonlik va ilmiy profillar
+        `"${e}" (site:linkedin.com OR site:researchgate.net OR site:medium.com)`,
+        // Forum, izoh, e'lon — odam o'z emailini yozib qoldirgan joylar
+        `"${e}" (forum OR izoh OR comment OR sharh OR e'lon OR ro'yxat)`,
+        // Oqishlar va pastebin — dump'larda ko'rinadi
+        `"${e}" (site:pastebin.com OR leak OR oqish OR dump)`,
+        ...localQ,
       ];
     },
     num: 6,

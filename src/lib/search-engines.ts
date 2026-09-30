@@ -6,8 +6,12 @@ import type { SearchResultItem } from "./osint";
  * Z.ai SDK faqat Z.ai sandbox muhitida ishlaydi. Lokal mashinalarda (Kali,
  * Windows, macOS) skaner avtomatik shu zanjirga o'tadi:
  *
- *   DuckDuckGo HTML → DuckDuckGo Lite → Mojeek → Brave → Yahoo
- *   → Bing → Google Yangiliklar RSS → Bing Yangiliklar RSS → SearXNG
+ *   DuckDuckGo HTML → DuckDuckGo Lite → Bing → Google Yangiliklar RSS
+ *   → Yandex → Startpage (Google proksi) → Bing Yangiliklar RSS → SearXNG
+ *   → Yahoo → Ecosia → Marginalia → Yep → Mojeek → Brave
+ *
+ * Yandex — RU/UZ bo'shliqini eng chuqur indekslaydi (t.me, VK, OK, Instagram
+ * izlari ko'proq chiqadi). Startpage — Google natijalarini kalitsiz beradi.
  *
  * Har bir dvigatel javobi operator filtri (site:/"ibora") o'tkaziladi —
  * ba'zi dvigatellar operatorli so'rovga soxta (mos bo'lmagan) natija
@@ -17,7 +21,7 @@ import type { SearchResultItem } from "./osint";
 
 // dvigatellarni yangilaganda ham bu satr saqlansin — diagnostika kod
 // versiyasini shu belgi orqali aniqlaydi
-export const SEARCH_ENGINES_VERSION = "multi-10-engines-v4";
+export const SEARCH_ENGINES_VERSION = "multi-14-engines-v5";
 
 const UA_FIREFOX =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0";
@@ -560,6 +564,194 @@ export async function braveSearch(
   return operatorFilter(query, results);
 }
 
+// ===== SERP parser — barcha yangi dvigatellarda qayta ishlatiladi =====
+/**
+ * HTML ichidan natija havolalarini bir nechta fallback regex bilan oladi.
+ * Dvigatel markup'i o'zgarsa ikkinchi/uchinchi pattern ishlaydi;
+ * hammasi bo'sh bo'lsa — bo'sh massiv qaytadi (dvigatel cooldown oladi).
+ */
+function extractSerResults(
+  html: string,
+  num: number,
+  patterns: RegExp[],
+  blockHostRe?: RegExp
+): { name: string; url: string }[] {
+  const out: { name: string; url: string }[] = [];
+  const seen = new Set<string>();
+  for (const re of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html)) && out.length < num) {
+      const url = decodeEntities(m[1]);
+      if (!/^https?:\/\//i.test(url)) continue;
+      if (blockHostRe?.test(url)) continue;
+      const key = url.replace(/[#?].*$/, "");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ name: stripTags(m[2]) || hostOf(url), url });
+    }
+    if (out.length > 0) break;
+  }
+  return out;
+}
+
+const H2_FALLBACK =
+  /<h2[^>]*><a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a><\/h2>/g;
+
+// ===== 5a. Yandex =====
+/**
+ * Yandex — RU/UZ kontentini eng chuqur indekslaydi: t.me, telegra.ph, VK,
+ * OK.ru, Instagram izlari Google/Bing/DDG'dan ko'proq chiqadi. O'zbek va
+ * rus tilidagi ma'lumotlar uchun eng samarali ochiq dvigatel.
+ */
+export async function yandexSearch(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  const html = await fetchHtml(
+    `https://yandex.com/search/?text=${encodeURIComponent(query)}`,
+    {
+      ua: UA_CHROME,
+      timeoutMs: 7000,
+      headers: chromeBrowserHeaders({ Referer: "https://yandex.com/" }),
+    }
+  );
+  if (/showcaptcha|smartcaptcha|<title>verification/i.test(html.slice(0, 8000)))
+    throw new Error("Yandex captcha");
+  const found = extractSerResults(
+    html,
+    num,
+    [
+      /<a[^>]+class="[^"]*organic__url[^"]*"[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/g,
+      H2_FALLBACK,
+    ],
+    /yandex\.|ya\.ru/i
+  );
+  return operatorFilter(
+    query,
+    found.map((f) => ({
+      name: f.name,
+      url: f.url,
+      snippet: "",
+      host_name: hostOf(f.url),
+    }))
+  );
+}
+
+// ===== 5b. Startpage — Google natijalari proksi =====
+/**
+ * Startpage Google natijalarini kalitsiz, shaffof private oynadan beradi —
+ * "Google'da ham qidirish" talabining bepul yechimi. Ba'zan captcha beradi,
+ * o'shanda sovitish rejimi o'tkazib yuboradi.
+ */
+export async function startpageSearch(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  const html = await fetchHtml(
+    `https://www.startpage.com/sp/search?query=${encodeURIComponent(query)}`,
+    {
+      ua: UA_CHROME,
+      timeoutMs: 7000,
+      headers: chromeBrowserHeaders({ Referer: "https://www.startpage.com/" }),
+    }
+  );
+  if (/captcha|<title>[^<]*blocked/i.test(html.slice(0, 8000)))
+    throw new Error("Startpage captcha/block");
+  const found = extractSerResults(
+    html,
+    num,
+    [
+      /<a[^>]+class="[^"]*wgl-link[^"]*"[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/g,
+      H2_FALLBACK,
+    ],
+    /startpage\.com/i
+  );
+  return operatorFilter(
+    query,
+    found.map((f) => ({
+      name: f.name,
+      url: f.url,
+      snippet: "",
+      host_name: hostOf(f.url),
+    }))
+  );
+}
+
+// ===== 5c. Ecosia — Bing bazali, o'z serveridan =====
+/**
+ * Ecosia Bing indeksidan foydalanadi lekin Bing'dan kamroq bloklaydi —
+ * Bing 429 bergan zanjir momentida zaxira variant.
+ */
+export async function ecosiaSearch(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  const html = await fetchHtml(
+    `https://www.ecosia.org/search?q=${encodeURIComponent(query)}`,
+    {
+      ua: UA_CHROME,
+      timeoutMs: 7000,
+      headers: chromeBrowserHeaders({ Referer: "https://www.ecosia.org/" }),
+    }
+  );
+  const found = extractSerResults(
+    html,
+    num,
+    [
+      /<a[^>]+class="[^"]*result__link[^"]*"[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/g,
+      /<a[^>]+data-test-id="[^"]*result-link[^"]*"[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/g,
+      H2_FALLBACK,
+    ],
+    /ecosia\.org/i
+  );
+  return operatorFilter(
+    query,
+    found.map((f) => ({
+      name: f.name,
+      url: f.url,
+      snippet: "",
+      host_name: hostOf(f.url),
+    }))
+  );
+}
+
+// ===== 5d. Yep — Ahrefs dvigateli =====
+/**
+ * Yep (yep.com) — Ahrefs'ning o'z indeksli dvigateli, HTML'i sodda.
+ * Ko'pincha boshqa dvigatellar topmagan sahifalarni beradi.
+ */
+export async function yepSearch(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  const html = await fetchHtml(
+    `https://yep.com/web?q=${encodeURIComponent(query)}`,
+    {
+      ua: UA_CHROME,
+      timeoutMs: 6000,
+      headers: chromeBrowserHeaders({ Referer: "https://yep.com/" }),
+    }
+  );
+  const found = extractSerResults(
+    html,
+    num,
+    [
+      /<a[^>]+class="[^"]*(?:partial-title|serp-title)[^"]*"[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/g,
+      H2_FALLBACK,
+    ],
+    /yep\.com/i
+  );
+  return operatorFilter(
+    query,
+    found.map((f) => ({
+      name: f.name,
+      url: f.url,
+      snippet: "",
+      host_name: hostOf(f.url),
+    }))
+  );
+}
+
 // ===== 5. Qwant =====
 export async function qwantSearch(
   query: string,
@@ -1058,6 +1250,11 @@ function cacheSet(query: string, num: number, results: SearchResultItem[], engin
  */
 const ENGINE_GAP_MS: Record<string, number> = {
   Marginalia: 700,
+  Yep: 1400,
+  Ecosia: 1500,
+  // Yandex/Startpage botga qattiq — boshqalardan ko'proq dam beramiz
+  Yandex: 1900,
+  Startpage: 1900,
   "Google Yangiliklar": 900,
   "Bing Yangiliklar": 900,
   SearXNG: 1400,
@@ -1119,15 +1316,21 @@ const ENGINE_CHAIN: { name: string; fn: EngineFn }[] = [
   // 2-juftlik: Microsoft/Google yangiliklari ham barqaror
   { name: "Bing", fn: bingSearch },
   { name: "Google Yangiliklar", fn: googleNewsRssSearch },
-  // 3-juftlik: server-render SearXNG (paulgo.io) + Marginalia JSON API
+  // 3-juftlik: Yandex (RU/UZ chuqur indeks) + Startpage (Google proksi)
+  { name: "Yandex", fn: yandexSearch },
+  { name: "Startpage", fn: startpageSearch },
+  // 4-juftlik: server-render SearXNG (paulgo.io) + Marginalia JSON API
   { name: "Bing Yangiliklar", fn: bingNewsRssSearch },
   { name: "SearXNG", fn: searxSearch },
   { name: "Marginalia", fn: marginaliaSearch },
-  // 4-juftlik: Yahoo — server-render HTML, Qwant'ning barqaror o'rnini bosadi
+  // 5-juftlik: Yahoo — server-render HTML, Qwant'ning barqaror o'rnini bosadi
   { name: "Yahoo", fn: yahooSearch },
-  // 5-juftlik: qattiq bot-aniqlagichli dvigatellar — ko'pincha 403/429,
-  // lekin ba'zi tarmoqlarda ishlaydi; sovitish rejimi avtomatik o'tkazadi
+  { name: "Ecosia", fn: ecosiaSearch },
+  // 6-juftlik: Yep — Ahrefs indeksi
+  { name: "Yep", fn: yepSearch },
   { name: "Mojeek", fn: mojeekSearch },
+  // 7-juftlik: qattiq bot-aniqlagichli dvigatellar — ko'pincha 403/429,
+  // lekin ba'zi tarmoqlarda ishlaydi; sovitish rejimi avtomatik o'tkazadi
   { name: "Brave", fn: braveSearch },
 ];
 

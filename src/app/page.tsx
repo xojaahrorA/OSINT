@@ -57,6 +57,9 @@ import {
   Plus,
   BadgeCheck,
   CircleHelp,
+  Shuffle,
+  AtSign,
+  UserRoundSearch,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -136,6 +139,10 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "username-probe": UserCheck,
   "phone-meta": Phone,
   "wiki-people": BookOpen,
+  // Yangi: ism variantlari, email izlari, email → username
+  "name-variants": Shuffle,
+  "email-mentions": AtSign,
+  "email-username": UserRoundSearch,
   // Telegram — Instant Messaging manbalari
   telegram: Send,
   "telegram-feed": Rss,

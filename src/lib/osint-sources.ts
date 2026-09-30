@@ -18,6 +18,7 @@ import {
   telegramFeedSource,
   telegramBotApiSource,
 } from "@/lib/telegram";
+import { verifyProfileLinks } from "@/lib/profile-verify";
 
 // ===== Yordamchilar =====
 
@@ -1379,6 +1380,46 @@ async function wikiPeopleSource(rawTarget: string): Promise<SearchResultItem[]> 
   return out;
 }
 
+// ===== Email → Username transformi (Maltego uslubi) =====
+/**
+ * Email lokal qismi (@dan oldingi) ko'pincha odamning asosiy username'i hamdir:
+ *   durov@gmail.com → "durov" → t.me/durov, github.com/durov...
+ * Bu transform lokal qismni 12 platformada JONLI tekshiradi — Task 24'dagi
+ * verify-first prinsipi: faqat HAQIQAT mavjud profillar qoladi, yo'qlar
+ * olib tashlanadi. Ishonch: 100% jonli HTTP javobi.
+ */
+export async function emailUsernameSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const em = parseEmail(rawTarget);
+  if (!em) return [];
+  const local = em.local
+    .replace(/\d+$/, "") // oxiridagi raqamlar (dilshod97 → dilshod) — variant
+    .replace(/[._-]+$/, "")
+    .trim();
+  // Juda umumiy lokal qismlar (info/admin/support) — odamga tegishli emas
+  if (local.length < 3 || /^(info|admin|support|contact|help|mail|sales|office)$/.test(local)) {
+    return [];
+  }
+  const candidates = [...new Set([em.local, local])].filter((c) => c.length >= 3);
+  const out: SearchResultItem[] = [];
+  for (const cand of candidates.slice(0, 2)) {
+    try {
+      const v = await verifyProfileLinks(cand);
+      // Faqat TASDIQLANGAN profillar — aniqlanmaganlar ham shovqin bo'ladi
+      for (const it of v.items) {
+        if (it.verified !== "yes") continue;
+        out.push({
+          ...it,
+          name: it.name.replace(`@${cand}`, `@${cand} (email'dan)`),
+          snippet: `Email lokal qismi "${cand}" bu platformada HAQIQIY profil topildi. ${it.snippet}`,
+        });
+      }
+    } catch {
+      /* tekshiruv bajarilmadi — o'tkazamiz */
+    }
+  }
+  return out;
+}
+
 // ===== Manbalar ro'yxati =====
 
 export interface DirectSourceDef {
@@ -1407,6 +1448,7 @@ export const DIRECT_RUNS: Record<
   mailbox: mailboxSource,
   "corp-domain": corpDomainSource,
   "github-email": githubSource,
+  "email-username": emailUsernameSource,
   // Username / Telefon / Ism
   whatsmyname: whatsMyNameSource,
   "username-probe": usernameProbeSource,
@@ -1431,7 +1473,7 @@ export function directSourceIdsFor(type: TargetType): string[] {
     : type === "ip"
       ? ["ip-intel", "whois-ip", "ptr-recon", "shodan", "ipinfo", "otx", ...PREMIUM_SEARCH_IDS]
       : type === "email"
-        ? ["breaches", "gravatar", "mailbox", "corp-domain", "github-email", "hibp", "hunter", "reverse-whois", ...PREMIUM_SEARCH_IDS]
+        ? ["breaches", "gravatar", "mailbox", "corp-domain", "github-email", "email-username", "hibp", "hunter", "reverse-whois", ...PREMIUM_SEARCH_IDS]
         : type === "username"
           ? ["whatsmyname", "username-probe", "telegram", "telegram-feed", "telegram-bot", ...PREMIUM_SEARCH_IDS]
           : type === "phone"
