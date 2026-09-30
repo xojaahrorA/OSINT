@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Radar,
   ScanSearch,
@@ -55,6 +55,8 @@ import {
   Fingerprint,
   PenLine,
   Plus,
+  BadgeCheck,
+  CircleHelp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -87,6 +89,7 @@ import {
   HistorySheet,
   type HistoryItem,
 } from "@/components/osint/history-sheet";
+import { SearchGuideDialog } from "@/components/osint/search-guide-dialog";
 import {
   OSINT_MODULES,
   TARGET_TYPES,
@@ -406,6 +409,66 @@ export default function Home() {
   const statsRef = useRef<Record<string, number>>({});
 
   const busy = step === "global" || step === "focused" || step === "pivots";
+
+  // ===== Shaxsni tasdiqlash (kross-validatsiya) — «bo'lmagan odamlar» muammosiga =====
+  // Foydalanuvchi kiritgan HAR BIR identifikator (username, telefon, ism, email)
+  // alohida guruh. Topilma matnida 2+ guruh birga uchrasa — bu SHU SHAHS ekanligi
+  // kuchli ishora (masalan: telefon + ism bir sahifada). Faqat 1 guruh mos bo'lsa
+  // — «ehtimol» (odatdagi holat), hech biri mos kelmasa — «shubhali».
+  // Ism guruhining o'ziga xosligi: ismning BARCHA so'zlari (3+ harf) topilmada
+  // bo'lishi kerak — faqat familiya mos kelishi boshqa shaxs bo'lishi mumkin.
+  type IdentifierGroup = { kind: TargetType; label: string; match: (text: string) => boolean };
+  const sessionIdentifiers = useMemo<IdentifierGroup[]>(() => {
+    const raws = batchQueries.length > 0 ? batchQueries : target ? [target.query] : [];
+    const groups: IdentifierGroup[] = [];
+    for (const raw of raws) {
+      const kind = detectTargetType(raw);
+      const v = normalizeTargetValue(kind, raw);
+      if (kind === "phone") {
+        const digits = v.replace(/\D/g, "");
+        if (digits.length >= 7) {
+          groups.push({ kind, label: v, match: (text) => text.replace(/\D/g, "").includes(digits) });
+        }
+      } else if (kind === "name") {
+        const words = v.toLowerCase().split(/\s+/).filter((w) => w.length >= 3);
+        if (words.length > 0) {
+          groups.push({
+            kind,
+            label: v,
+            match: (text) => words.every((w) => text.includes(w)),
+          });
+        }
+      } else if (v.length >= 3) {
+        groups.push({ kind, label: v, match: (text) => text.includes(v.toLowerCase()) });
+      }
+    }
+    return groups;
+  }, [batchQueries, target]);
+
+  const confidenceMap = useMemo(() => {
+    const map = new Map<string, "verified" | "probable" | "weak">();
+    if (sessionIdentifiers.length < 2) return map;
+    for (const m of modules) {
+      for (const r of m.results) {
+        const key = normalizeUrl(r.url);
+        if (map.has(key)) continue;
+        const text = `${r.name} ${r.snippet} ${r.url}`.toLowerCase();
+        const matched = sessionIdentifiers.filter((g) => g.match(text)).length;
+        map.set(key, matched >= 2 ? "verified" : matched === 1 ? "probable" : "weak");
+      }
+    }
+    return map;
+  }, [modules, sessionIdentifiers]);
+
+  // «Faqat tasdiqlangan» filtri — 2+ identifikatorli sessiyalarda chiqadi
+  const [onlyVerified, setOnlyVerified] = useState(false);
+  const displayModules = useMemo(() => {
+    if (!onlyVerified || sessionIdentifiers.length < 2) return modules;
+    return modules.map((m) => {
+      const filtered = m.results.filter((r) => confidenceMap.get(normalizeUrl(r.url)) === "verified");
+      return { ...m, results: filtered, count: filtered.length };
+    });
+  }, [modules, onlyVerified, confidenceMap, sessionIdentifiers]);
 
   useEffect(() => {
     try {
@@ -1664,8 +1727,10 @@ export default function Home() {
             </div>
           )}
 
-          <Card className="p-4 sm:p-5 max-w-3xl mx-auto">
-            {!multiMode && (
+              <SearchGuideDialog />
+
+              <Card className="p-4 sm:p-5 max-w-3xl mx-auto">
+                {!multiMode && (
               <div className="flex flex-wrap gap-1.5 justify-center">
                 {TARGET_TYPES.map((t) => (
                   <button
@@ -2085,26 +2150,42 @@ export default function Home() {
                         ? "topilmalar bir-biriga ulangan tarmoqda"
                         : "modullar bo'yicha ro'yxat"}
                     </span>
+                    {sessionIdentifiers.length >= 2 && (
+                      <button
+                        type="button"
+                        onClick={() => setOnlyVerified((v) => !v)}
+                        className={`ml-auto flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium border transition-colors ${
+                          onlyVerified
+                            ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/40"
+                            : "bg-secondary/40 text-muted-foreground border-transparent hover:border-primary/30"
+                        }`}
+                        aria-pressed={onlyVerified}
+                        title="Faqat 2+ maqsad belgisi birga uchragan topilmalar ko'rsatiladi — boshqa shaxslarga tegishli natijalar yashiriladi"
+                      >
+                        <BadgeCheck className="w-3.5 h-3.5" />
+                        Faqat tasdiqlangan
+                      </button>
+                    )}
                   </div>
 
                   {viewMode === "graf" ? (
                     <EntityGraph
                       target={target ?? { type, query: input }}
-                      modules={modules}
+                      modules={displayModules}
                       busy={busy}
                       searchedKeys={searchedKeys}
                       onSearchEntity={runIntelSearch}
                     />
                   ) : (
                 <Tabs
-                  value={activeTab || modules[0]?.moduleId}
+                  value={activeTab || displayModules[0]?.moduleId}
                   onValueChange={(v) => {
                     touchedTabRef.current = true;
                     setActiveTab(v);
                   }}
                 >
                   <TabsList className="w-full h-auto flex-wrap justify-start gap-1 bg-secondary/40">
-                    {modules.map((m) => {
+                    {displayModules.map((m) => {
                       const Icon = MODULE_ICONS[m.moduleId] ?? Globe;
                       return (
                         <TabsTrigger
@@ -2129,7 +2210,7 @@ export default function Home() {
                       );
                     })}
                   </TabsList>
-                  {modules.map((m) => (
+                  {displayModules.map((m) => (
                     <TabsContent key={m.moduleId} value={m.moduleId} className="mt-3">
                       {m.status === "running" ? (
                         <div className="text-center py-10 text-sm text-muted-foreground flex items-center justify-center gap-2">
@@ -2138,7 +2219,9 @@ export default function Home() {
                         </div>
                       ) : m.count === 0 ? (
                         <div className="text-center py-10 text-sm text-muted-foreground">
-                          Bu modul bo&apos;yicha ochiq manbalarda natija topilmadi.
+                          {onlyVerified && sessionIdentifiers.length >= 2
+                            ? "Tasdiqlangan topilma yo'q — filtni o'chirib, barcha topilmalarni ko'ring."
+                            : "Bu modul bo&apos;yicha ochiq manbalarda natija topilmadi."}
                         </div>
                       ) : (
                         <div className="space-y-2.5">
@@ -2153,6 +2236,7 @@ export default function Home() {
                                 saving={false}
                                 skipped={skipped.has(key)}
                                 verdict={verdicts[key] ?? null}
+                                confidence={confidenceMap.get(key)}
                                 onPivot={addPivotManual}
                               />
                             );

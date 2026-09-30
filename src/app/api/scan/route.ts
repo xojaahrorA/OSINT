@@ -16,6 +16,7 @@ import {
   type SpeedProfile,
 } from "@/lib/search-engines";
 import { DIRECT_RUNS, cleanDomain } from "@/lib/osint-sources";
+import { verifyProfileLinks } from "@/lib/profile-verify";
 import {
   premiumKeyMissing,
   premiumFind,
@@ -216,6 +217,12 @@ export async function POST(req: NextRequest) {
       );
       log("sys", "Rejim: PASSIVE OSINT — faqat ochiq manbalar, tizimga ruxsatsiz kirish yo'q.");
       log("sys", `Tezlik: ${SPEED_STAGGER[speed].label}`);
+      if (targetType === "name") {
+        log(
+          "info",
+          "Ism-familiya yagona identifikator emas — bir xil ismda ko'p odam bo'ladi. Aniqlik uchun: ko'p maqsadli rejimda username/telefon bilan BIRGA bering, natijalarda «Tasdiqlangan» belgisini kuzating yoki CHUQUR rejimda AI solishtirishni yoqing."
+        );
+      }
       if (directPlanned.length > 0) {
         log(
           "sys",
@@ -533,9 +540,31 @@ export async function POST(req: NextRequest) {
       }
 
       if (targetType === "username" && querySet !== "deep-only") {
-        log("info", "[Profil havolalari] 12 ta platforma uchun to'g'ridan-to'g'ri havolalar tayyorlanmoqda...");
-        const links = buildProfileLinks(query);
-        log("ok", `[Profil havolalari] ${links.length} ta havola tayyor`);
+        log(
+          "info",
+          "[Profil havolalari] 12 platforma jonli tekshirilmoqda — HTTP javobi bo'yicha profil mavjudligi aniqlanadi..."
+        );
+        let links: SearchResultItem[] = [];
+        let dropped = 0;
+        let okCount = 0;
+        let unkCount = 0;
+        try {
+          const v = await withTimeout(verifyProfileLinks(query), 30_000, "profile-verify");
+          links = v.items;
+          okCount = v.verified;
+          dropped = v.dropped;
+          unkCount = v.unknown;
+          log(
+            "ok",
+            `[Profil havolalari] ✓ ${okCount} profil TASDIQLANDI · ${dropped} saytda mavjud emas (olib tashlandi) · ${unkCount} aniqlanmadi (qo'lda tekshiring)`
+          );
+        } catch {
+          links = buildProfileLinks(query);
+          log(
+            "warn",
+            "[Profil havolalari] Jonli tekshiruv bajarilmadi — havolalar tekshirilmagan belgisi bilan qoldi"
+          );
+        }
         send({
           type: "module_done",
           moduleId: "profiles",

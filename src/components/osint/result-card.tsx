@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import {
+  BadgeCheck,
   BookmarkCheck,
   BookmarkPlus,
   ExternalLink,
@@ -9,6 +10,7 @@ import {
   Play,
   Plus,
   ShieldAlert,
+  ShieldQuestion,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -34,6 +36,7 @@ export function ResultCard({
   saving,
   skipped = false,
   verdict,
+  confidence,
   onPivot,
 }: {
   item: SearchResultItem;
@@ -42,6 +45,8 @@ export function ResultCard({
   saving: boolean;
   skipped?: boolean;
   verdict?: { verdict: "related" | "unsure" | "unrelated"; reason: string } | null;
+  /** Kross-validatsiya: "verified" — 2+ identifikator birga uchragan, "weak" — hech biri */
+  confidence?: "verified" | "probable" | "weak";
   onPivot?: (p: PivotCandidate) => void;
 }) {
   const isProfileLink = item.snippet.startsWith("To'g'ridan-to'g'ri profil havolasi");
@@ -52,7 +57,7 @@ export function ResultCard({
     <div
       className={`group rounded-lg border bg-card p-4 hover:border-emerald-500/40 transition-colors ${
         skipped ? "opacity-55 border-dashed" : ""
-      }`}
+      } ${confidence === "verified" ? "border-emerald-500/40" : ""}`}
     >
       <div className="flex items-start gap-3">
         <div className="mt-0.5 flex w-7 h-7 rounded-md bg-secondary items-center justify-center shrink-0 overflow-hidden">
@@ -91,6 +96,33 @@ export function ResultCard({
               <span className="text-[10px] text-red-400/80 border border-red-500/30 rounded px-1">
                 o&apos;tkazib yuborilgan
               </span>
+            )}
+            {!skipped && confidence === "verified" && (
+              <Badge
+                className="h-4 px-1.5 text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/25"
+                title="Bu topilmada 2+ maqsad belgisi (masalan: telefon + ism) bir vaqtda uchradi — shu shaxsga tegishliligi kuchli ishora"
+              >
+                <BadgeCheck className="w-2.5 h-2.5 mr-0.5" />
+                Tasdiqlangan
+              </Badge>
+            )}
+            {!skipped && confidence === "weak" && (
+              <Badge
+                className="h-4 px-1.5 text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/25"
+                title="Maqsad belgilari ichida hech biri (yoki juda oz qismi) shu topilmada uchramadi — boshqa shaxs/mavzu bo'lishi mumkin"
+              >
+                <ShieldQuestion className="w-2.5 h-2.5 mr-0.5" />
+                Shubhali
+              </Badge>
+            )}
+            {!skipped && item.verified === "yes" && (
+              <Badge
+                className="h-4 px-1.5 text-[9px] bg-sky-500/10 text-sky-400 border border-sky-500/25"
+                title={item.verifyNote ?? "Profil jonli HTTP tekshiruvi bilan tasdiqlandi"}
+              >
+                <BadgeCheck className="w-2.5 h-2.5 mr-0.5" />
+                Profil bor
+              </Badge>
             )}
             {!skipped && verdict && (
               <Badge

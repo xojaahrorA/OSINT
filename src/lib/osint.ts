@@ -25,6 +25,10 @@ export interface SearchResultItem {
   host_name: string;
   date?: string;
   favicon?: string;
+  /** Jonli tekshiruv natijasi (profil havolalari): "yes" — tasdiqlandi, "no" — mavjud emas, "unknown" — aniqlanmadi */
+  verified?: "yes" | "no" | "unknown";
+  /** Tekshiruv izohi — nima uchun shunday xulosa qilingani */
+  verifyNote?: string;
 }
 
 export interface ModuleResult {
@@ -542,6 +546,7 @@ export const OSINT_MODULES: OsintModuleDef[] = [
         ? `${nat.slice(0, 2)}-${nat.slice(2, 5)}-${nat.slice(5, 7)}-${nat.slice(7, 9)}`
         : nat;
       const anyFmt = `("${e164}" OR "${spaced}" OR "${dashed}")`;
+      const digitsNoPlus = digits.replace(/^\+/, "");
       return [
         // Telegram post va kanallarda raqam qayerga yozilgan
         `site:t.me ${anyFmt}`,
@@ -549,10 +554,14 @@ export const OSINT_MODULES: OsintModuleDef[] = [
         `${anyFmt} (site:tgstat.uz OR site:tgstat.ru OR site:lyzem.com OR site:telemetr.io)`,
         // Ijtimoiy tarmoqlarda profillar/postlar
         `${anyFmt} (site:instagram.com OR site:facebook.com OR site:vk.com OR site:ok.ru)`,
-        // WhatsApp/Viber/Signal guruh va chatlarda
-        `${anyFmt} (whatsapp OR viber OR signal) (guruh OR chat OR a'zo OR qo'shildi)`,
-        // E'lonlar, biznes kataloglar, ma'lumotnomalar
-        `${anyFmt} (olx OR e'lon OR biznes OR kontakt OR menejer OR ma'lumotnoma OR katalog)`,
+        // WhatsApp havolalari — wa.me/998901234567 ko'rinishida indekslanadi
+        `site:wa.me ${digitsNoPlus} OR (site:api.whatsapp.com "phone=${digitsNoPlus}")`,
+        // Raqam razvedkasi bazalari — sync.me/truecaller ochiq sahifalari
+        `${anyFmt} (site:sync.me OR site:truecaller.com OR site:numlookup.com)`,
+        // E'lonlar, biznes kataloglar, ma'lumotnomalar — O'zbekiston bozorlari
+        `${anyFmt} (site:olx.uz OR e'lon OR biznes OR kontakt OR menejer OR ma'lumotnoma OR katalog)`,
+        // Egasi/mulkdor atamalari — "... raqam egasi", "mulkdor aloqa"
+        `${anyFmt} (egasi OR mulkdor OR aloqa raqami)`,
       ];
     },
     deepQueries: (t) => {
@@ -566,9 +575,12 @@ export const OSINT_MODULES: OsintModuleDef[] = [
         ? `${nat.slice(0, 2)}-${nat.slice(2, 5)}-${nat.slice(5, 7)}-${nat.slice(7, 9)}`
         : nat;
       const anyFmt = `("${e164}" OR "${spaced}" OR "${dashed}")`;
+      const digitsNoPlus = digits.replace(/^\+/, "");
       return [
+        // WhatsApp/Viber havola formatlari — wa.me raqamni "plus"siz indekslaydi
+        `(site:wa.me OR site:api.whatsapp.com OR site:viber.com) ${digitsNoPlus}`,
         // Hujjatlar va jadvallar — kontakt bazalari, hisobotlar
-        `${anyFmt} (filetype:pdf OR filetype:xlsx OR filetype:csv OR filetype:docx)`,
+        `${anyFmt} (filetype:pdf OR filetype:xlsx OR filetype:csv OR filetype:docx OR filetype:vcf)`,
         // Oqishlar va yopiq bazalarda eslatma
         `${anyFmt} (pastebin OR leak OR oqish OR bazalar OR tayyorlangan)`,
         // Forum va commentlar
@@ -636,8 +648,10 @@ export function buildProfileLinks(username: string): SearchResultItem[] {
   return platforms.map((p) => ({
     name: `${p.name} — @${u}`,
     url: p.url,
-    snippet: "To'g'ridan-to'g'ri profil havolasi. Mavjudligini brauzerda ochib tekshiring (tizim faqat ochiq qidiruvdan foydalanadi).",
+    snippet:
+      "Jonli tekshiruv o'tkazilmoqda: sayt HTTP javobi bo'yicha profil mavjudligi aniqlanadi. Bloklangan saytlar «aniqlanmadi» deb belgilanadi.",
     host_name: p.host,
+    verified: "unknown" as const,
   }));
 }
 

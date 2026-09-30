@@ -126,10 +126,19 @@ function siteDisplayUrl(site: WmnSite, u: string): string {
 function evaluate(
   site: WmnSite,
   status: number,
-  body: string
+  body: string,
+  uu = ""
 ): { state: "found" | "missing" | "unknown" } {
   // TOPILDI: e_code mos + e_string imzosi body'da (e_string bo'sh bo'lsa kod yetarli)
   if (status === site.e_code && (site.e_string === "" || body.includes(site.e_string))) {
+    // FALSE-POSITIVE HIMoyasi: e_string berilmagan saytlarda faqat HTTP kodga
+    // tayanish xavfli — ba'zi saytlar «foydalanuvchi topilmadi» sahifasini ham
+    // 200 bilan qaytaradi (soft-404). Bunday saytlarda profil sahifasida
+    // username o'zi chiqishi kerak — yo'q bo'lsa ishonchsiz (noma'lum).
+    if (site.e_string === "" && uu) {
+      const hay = body.toLowerCase();
+      if (!hay.includes(uu.toLowerCase())) return { state: "unknown" };
+    }
     return { state: "found" };
   }
   // YO'Q: m_code mos + m_string imzosi (yo'q sahifasi)
@@ -168,7 +177,7 @@ async function checkSite(
     const body = new TextDecoder("utf-8", { fatal: false }).decode(buf.slice(0, BODY_MAX));
     const status = res.status;
 
-    const first = evaluate(site, status, body);
+    const first = evaluate(site, status, body, uu);
     if (first.state === "found") {
       return { state: "found", hit: { site, url: siteDisplayUrl(site, uu), username: uu } };
     }
@@ -176,11 +185,15 @@ async function checkSite(
     // Redirect-recovery: ayrim saytlar uri_check'ni profil sahifasiga yo'naltiradi.
     // Birinchi javob 3xx bo'lib topilmadi bo'lsa — bora-bora follow qilib final javobni
     // ham baholaymiz (e_code=302 bo'lgan saytlar yuqorida allaqachon topilgan bo'ladi).
+    // FALSE-POSITIVE HIMoyasi: ba'zi saytlar NOTO'G'RI username'ni ham bosh sahifaga
+    // yo'naltiradi — shuning uchun final javobda username o'zi (yoki yo'nalish
+    // manzilida) bo'lishi shart, aks holda «topildi» deb hisoblanmaydi.
     if (!isPost && status >= 300 && status < 400) {
       const loc = res.headers.get("location");
       if (loc) {
         try {
-          const res2 = await fetch(new URL(loc, url).toString(), {
+          const followUrl = new URL(loc, url).toString();
+          const res2 = await fetch(followUrl, {
             method: "GET",
             headers: { "User-Agent": UA_WM, Accept: headers.Accept },
             redirect: "follow",
@@ -189,9 +202,16 @@ async function checkSite(
           });
           const buf2 = await res2.arrayBuffer();
           const body2 = new TextDecoder("utf-8", { fatal: false }).decode(buf2.slice(0, BODY_MAX));
-          const second = evaluate(site, res2.status, body2);
+          const second = evaluate(site, res2.status, body2, uu);
           if (second.state === "found") {
-            return { state: "found", hit: { site, url: siteDisplayUrl(site, uu), username: uu } };
+            const uuLow = uu.toLowerCase();
+            const corroborated =
+              body2.toLowerCase().includes(uuLow) || followUrl.toLowerCase().includes(uuLow);
+            if (corroborated) {
+              return { state: "found", hit: { site, url: siteDisplayUrl(site, uu), username: uu } };
+            }
+            // Yo'naltirilgan sahifada username yo'q — bosh sahifaga tashlagan bo'lishi mumkin
+            return { state: "unknown" };
           }
           if (second.state === "missing") return { state: "missing" };
         } catch {
