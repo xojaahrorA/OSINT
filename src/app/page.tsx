@@ -60,6 +60,9 @@ import {
   Shuffle,
   AtSign,
   UserRoundSearch,
+  KeyRound,
+  FileBadge,
+  Images,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -164,6 +167,10 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "phone-trace": Smartphone,
   "phone-mentions": Contact,
   "username-mentions": Fingerprint,
+  // Yangi: oqishlar, pasport hujjatlari, rasm izlari
+  "leak-search": KeyRound,
+  "document-leaks": FileBadge,
+  "photo-search": Images,
 };
 
 const EXAMPLES: { type: TargetType; query: string }[] = [

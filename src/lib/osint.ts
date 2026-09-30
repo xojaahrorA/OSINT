@@ -659,42 +659,64 @@ export const OSINT_MODULES: OsintModuleDef[] = [
     num: 6,
   },
   {
-    id: "email-mentions",
-    title: "Email qoldirilgan joylar",
-    icon: "AtSign",
+    id: "leak-search",
+    title: "Parollar va oqishlar",
+    icon: "KeyRound",
     description:
-      "Email QAYERLARDA qoldirilgan: Instagram/Facebook profillar, Telegram kanal-postlar, GitHub commit/issue, LinkedIn, kontakt sahifalar, rezyume/CV, hujjatlar (pdf/xlsx/csv), forumlar — email orqali odamning barcha izlari",
-    appliesTo: ["email"],
-    queries: (t) => {
-      const e = t.toLowerCase();
-      const local = e.split("@")[0] ?? "";
-      return [
-        // Ijtimoiy tarmoqlarda profil/bio ichida email
-        `"${e}" (site:instagram.com OR site:facebook.com OR site:vk.com OR site:ok.ru)`,
-        // Telegram ekosistemi: kanallar, postlar, telegra.ph maqolalari
-        `"${e}" (site:t.me OR site:telegram.me OR site:telegra.ph)`,
-        // Kod platformalari — commit muallifi, issue, profil bio
-        `"${e}" (site:github.com OR site:gitlab.com OR site:stackoverflow.com)`,
-        // Kontakt, CV, portfolio — odam o'zi qoldirgan sahifalar
-        `"${e}" (kontakt OR aloqa OR rezyume OR CV OR portfolio OR xodimlar)`,
-      ];
-    },
-    deepQueries: (t) => {
-      const e = t.toLowerCase();
-      const local = e.split("@")[0] ?? "";
-      const localQ = local.length >= 3 ? [`${local}@` , `"${local}" (username OR profil OR akkaunt)`] : [];
-      return [
-        // Hujjatlar va kontakt bazalari — xodimlar ro'yxati, hisobotlar
-        `"${e}" (filetype:pdf OR filetype:xlsx OR filetype:csv OR filetype:docx)`,
-        // Ishbilarmonlik va ilmiy profillar
-        `"${e}" (site:linkedin.com OR site:researchgate.net OR site:medium.com)`,
-        // Forum, izoh, e'lon — odam o'z emailini yozib qoldirgan joylar
-        `"${e}" (forum OR izoh OR comment OR sharh OR e'lon OR ro'yxat)`,
-        // Oqishlar va pastebin — dump'larda ko'rinadi
-        `"${e}" (site:pastebin.com OR leak OR oqish OR dump)`,
-        ...localQ,
-      ];
-    },
+      "Parollar va akkaunt ma'lumotlari OCHIQ oqishlarda: pastebin dump'lari, gist/paste saytlari, fayl bazalar (txt/sql/csv/log), GitHub/GitLab konfiguratsiya fayllari — «parol/password/пароль» belgilari bilan birga qidiriladi",
+    appliesTo: ALL,
+    queries: (t) => [
+      `"${t}" (parol OR password OR пароль) (oqish OR leak OR dump OR bazalar OR reestr)`,
+      `site:pastebin.com "${t}"`,
+      `"${t}" (filetype:txt OR filetype:sql OR filetype:csv OR filetype:log) (login OR parol OR password OR пароль)`,
+    ],
+    deepQueries: (t) => [
+      `"${t}" (site:controlc.com OR site:dpaste.org OR site:rentry.co OR site:paste.ee OR site:gist.github.com)`,
+      `"${t}" (site:github.com OR site:gitlab.com) (password OR parol OR пароль OR credentials OR config OR secret)`,
+      `"${t}" (login OR akkaunt OR hisob OR kirish) (sizib OR oqish OR tarqaldi OR sizdi OR leak OR olingan)`,
+      `"${t}" (baza OR "ma'lumotlar bazasi" OR ro'yxat) (site:pastebin.com OR leak OR dump OR oqish)`,
+    ],
+    num: 6,
+  },
+  {
+    id: "document-leaks",
+    title: "Pasport va hujjatlar",
+    icon: "FileBadge",
+    description:
+      "Pasport, guvohnoma va shaxsiy hujjatlar ochiq joylarda: PDF/DOC arxivlar, hujjat kutubxonalari (scribd, docdroid, pdfcoffee), Telegram/telegra.ph postlari, JSHSHIR/seriya belgilari bilan hujjat bazalari",
+    appliesTo: ALL,
+    queries: (t) => [
+      `"${t}" (pasport OR passport OR паспорт OR guvohnoma OR hujjat OR "ID karta")`,
+      `"${t}" filetype:pdf (pasport OR passport OR паспорт OR guvohnoma OR ariza OR rezyume OR CV OR anketa)`,
+      `"${t}" (site:scribd.com OR site:docdroid.net OR site:pdfcoffee.com OR site:vdoc.pub OR site:idoc.pub)`,
+    ],
+    deepQueries: (t) => [
+      `"${t}" (filetype:doc OR filetype:docx OR filetype:xlsx OR filetype:pptx OR filetype:rtf OR filetype:vcf)`,
+      `"${t}" (site:t.me OR site:telegra.ph) (pasport OR паспорт OR guvohnoma OR hujjat OR ro'yxat OR baza)`,
+      `"${t}" (jshshir OR JSHSHIR OR pinfl OR ПИНФЛ OR seriya OR "passport series" OR "pasport seriya")`,
+      `"${t}" (reestr OR baza OR ro'yxat OR ma'lumotnoma OR arxiv) (pasport OR паспорт OR hujjat OR jshshir)`,
+    ],
+    num: 6,
+  },
+  {
+    id: "photo-search",
+    title: "Rasm izlari",
+    icon: "Images",
+    description:
+      "Rasmlar QAYERDA ishlatilgan: Bing Rasm qidiruvi (jonli — har rasmda manba sahifa va to'liq fayl havolasi), foto hostlar (imgur, flickr, postimages, avatanak), Instagram mirror foto sahifalari, Telegram/telegra.ph postlari",
+    appliesTo: ALL,
+    queries: (t) => [
+      // Maxsus prefiks — scan route shu so'rovni jonli Bing Rasm qidiruviga yuboradi
+      `bing-images:${t}`,
+      `"${t}" (foto OR rasm OR photo OR img) (site:imgur.com OR site:flickr.com OR site:postimages.org OR site:avatanak.com)`,
+      `"${t}" (rasmlari OR fotolari OR photos OR gallery OR galereya)`,
+    ],
+    deepQueries: (t) => [
+      `bing-images:${t} (profil OR avatar OR foto)`,
+      `"${t}" (site:picuki.com OR site:imginn.com OR site:greatfon.com OR site:instanavigation.com)`,
+      `"${t}" (site:pinterest.com OR site:tumblr.com OR site:imgur.com OR site:flickr.com)`,
+      `"${t}" (site:t.me OR site:telegra.ph) (rasm OR foto OR photo OR media)`,
+    ],
     num: 6,
   },
 ];

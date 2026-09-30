@@ -12,6 +12,7 @@ import {
   BadgeCheck,
   Sparkles,
   ListChecks,
+  KeyRound,
 } from "lucide-react";
 import {
   Dialog,
@@ -69,6 +70,11 @@ const GUIDE: GuideItem[] = [
     title: "8. Realistic bo'ling",
     body: "OSINT faqat OCHIQ manbalar bilan ishlaydi: kimdir bir joyda ma'lumot qoldirgan bo'lsa — topiladi, umuman qoldirmagan bo'lsa — hech bir vosita topolmaydi (parol/ginglik buzish yo'q). Topilma KO'P emas, TO'G'RI bo'lishi muhim: shubhali belgilanganlarni ishonch bilan tashlab qo'ying.",
   },
+  {
+    Icon: KeyRound,
+    title: "9. Parollar, pasport va rasmlar",
+    body: "Skaner OCHIQ oqishlarni ham qidiradi: parol dump'lari (pastebin/gist/fayl bazalar), pasport-hujjat fayllari (pdf/doc, hujjat kutubxonalari, Telegram postlari) va rasmlar — Bing Rasm qidiruvi jonli ulanadi, har rasmda manba sahifa ko'rsatiladi. Bunday ma'lumot faqat biror joyda OCHIQ qoldirilgan bo'lsa topiladi — yopiq bazalar va hakerlik vositalari OSINT qamrovidan tashqarida.",
+  },
 ];
 
 export function SearchGuideDialog() {
@@ -95,7 +101,7 @@ export function SearchGuideDialog() {
           </DialogTitle>
           <DialogDescription className="text-xs leading-relaxed">
             Nega ba&apos;zan noaniq natijalar chiqadi va qanday qilib aniqroq topish
-            mumkin — 8 ta qoida.
+            mumkin — 9 ta qoida.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 mt-1">

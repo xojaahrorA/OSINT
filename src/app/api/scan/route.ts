@@ -13,6 +13,7 @@ import {
   relevanceFilter,
   setSpeedProfile,
   SPEED_PROFILES,
+  bingImagesSearch,
   type SpeedProfile,
 } from "@/lib/search-engines";
 import { DIRECT_RUNS, cleanDomain } from "@/lib/osint-sources";
@@ -235,6 +236,12 @@ export async function POST(req: NextRequest) {
         log(
           "sys",
           `${directPlanned.length} ta to'g'ridan-to'g'ri manba ulanadi: ${directPlanned.map((m) => m.title).join(", ")}`
+        );
+      }
+      if (applicable.some((m) => m.id === "photo-search")) {
+        log(
+          "info",
+          "[Rasm izlari] Bing Rasm qidiruvi jonli ulanadi — har rasm manba sahifasi bilan chiqadi. Ayrim tarmoqlarda Bing ham bloklanishi mumkin — bunda foto host dork so'rovlari (imgur/flickr/mirrorlar) ishlaydi."
         );
       }
       for (const m of directNoKey) {
@@ -462,11 +469,25 @@ export async function POST(req: NextRequest) {
         );
       };
 
+      // "bing-images:" prefiksli so'rovlar — jonli Bing Rasm qidiruvi (photo-search moduli).
+      // Oddiy SERP o'rniga rasm natijalari qaytariladi: har topilmada manba sahifa
+      // va to'liq o'lchamdagi rasm havolasi bo'ladi.
+      const BING_IMAGES_PREFIX = "bing-images:";
+
       const runNext = async () => {
         while (cursor < queue.length && !closed && !req.signal.aborted) {
           const job = queue[cursor++];
           try {
-            const results = await searchWithRetry(job.query, job.num, job.recency);
+            const results = job.query.startsWith(BING_IMAGES_PREFIX)
+              ? await (async () => {
+                  lastEngineLabel = "Bing Rasm";
+                  return await withTimeout(
+                    bingImagesSearch(job.query.slice(BING_IMAGES_PREFIX.length), job.num),
+                    20_000,
+                    "bing-images"
+                  );
+                })()
+              : await searchWithRetry(job.query, job.num, job.recency);
             const seen = seenUrls.get(job.moduleId)!;
             const arr = collector.get(job.moduleId)!;
             let added = 0;
@@ -519,14 +540,25 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // To'g'ridan-to'g'ri manbalar va qidiruv zanjiri parallel ishlaydi
+      // To'g'ridan-to'g'ri manbalar va qidiruv zanjiri parallel ishlaydi.
+      // XATOLARSIZ REJIM: biror oqim kutilmagan xatoga uchrasa ham qolgan
+      // natijalar yo'qolmaydi va skaner "done" bilan to'g'ri yopiladi.
       await Promise.all([
-        runDirect(),
-        Promise.all(
-          Array.from(
-            { length: Math.min(zai ? CONCURRENCY : OPEN_CONCURRENCY, queue.length || 1) },
-            () => runNext()
+        runDirect().catch((e) =>
+          log(
+            "error",
+            `To'g'ridan-to'g'ri manbalar oqimi xato bilan yakunlandi (qolgan natijalar saqlanadi): ${String(e).slice(0, 90)}`
           )
+        ),
+        ...Array.from(
+          { length: Math.min(zai ? CONCURRENCY : OPEN_CONCURRENCY, queue.length || 1) },
+          () =>
+            runNext().catch((e) =>
+              log(
+                "error",
+                `Qidiruv oqimi xato bilan yakunlandi (qolgan natijalar saqlanadi): ${String(e).slice(0, 90)}`
+              )
+            )
         ),
       ]);
 

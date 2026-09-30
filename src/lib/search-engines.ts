@@ -858,6 +858,155 @@ export async function bingSearch(
   return results;
 }
 
+// ===== 6b. Bing RASMLAR — jonli rasm qidiruvi =====
+/**
+ * Bing Images scraping — odamning RASMLARI qayerda ishlatilganini topish uchun.
+ * Har natija:
+ *   url     — rasm joylashgan sahifa (manba — «u yer»)
+ *   snippet — to'liq o'lchamdagi rasm fayl havolasi (murl)
+ *   favicon — Bing thumbnail (kartada kichik ko'rinish chiqadi)
+ * Soft-blok (sahifa bor, iusc bloklari yo'q) → boshqa format bilan 1 marta
+ * qayta so'raladi, baribir bo'sh bo'lsa [] qaytadi (xato emas — rasm topilmadi).
+ */
+interface BingImageMeta {
+  murl?: string;
+  purl?: string;
+  turl?: string;
+  t?: string;
+  desc?: string;
+}
+
+async function bingImagesOnce(
+  endpoint: "search" | "async",
+  query: string,
+  num: number,
+  extraParams: string
+): Promise<SearchResultItem[]> {
+  // "search" — to'liq SERP sahifasi; "async" — brauzer scroll'da yuklaydigan
+  // grid endpoint'i (sahifa eskisi JS-shell qaytarsa bu to'liq metadata beradi)
+  const base =
+    endpoint === "search"
+      ? `https://www.bing.com/images/search?q=${encodeURIComponent(
+          query
+        )}&first=1&count=${Math.max(num, 15)}&mkt=en-US&setlang=en`
+      : `https://www.bing.com/images/async?q=${encodeURIComponent(
+          query
+        )}&first=0&count=${Math.max(num, 15)}&mkt=en-US`;
+  const html = await fetchHtml(base + extraParams, {
+    ua: UA_CHROME,
+    headers: {
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      Referer: "https://www.bing.com/",
+    },
+  });
+  const metas: BingImageMeta[] = [];
+  // Har natija <a class="iusc" ... m="{JSON}"> blokida — m atributi
+  // HTML-escape qilingan JSON (murl: rasm, purl: sahifa, turl: thumbnail)
+  const re = /<a\b[^>]*?\sm="([^"]+)"[^>]*>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) && metas.length < num * 3) {
+    if (!m[1].includes("murl")) continue;
+    try {
+      const j = JSON.parse(decodeEntities(m[1])) as BingImageMeta;
+      if (j.murl) metas.push(j);
+    } catch {
+      /* buzilgan atribut — o'tkazib yuboramiz */
+    }
+  }
+  const results: SearchResultItem[] = [];
+  const seen = new Set<string>();
+  for (const j of metas) {
+    if (results.length >= num) break;
+    if (!j.murl || !/^https?:\/\//i.test(j.murl)) continue;
+    const key = j.murl.replace(/[#?].*$/, "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const page =
+      j.purl && /^https?:\/\//i.test(j.purl) ? j.purl : j.murl;
+    results.push({
+      name: (j.t || j.desc || `Rasm — ${query}`).slice(0, 200),
+      url: page,
+      snippet: j.murl,
+      host_name: hostOf(page),
+      favicon: j.turl && /^https?:\/\//i.test(j.turl) ? j.turl : undefined,
+    });
+  }
+  return results;
+}
+
+/** Openverse (api.openverse.org) — kalitsiz, barqaror JSON rasm API.
+ * Bing JS-shell qaytargan hollarda ishonchli zaxira: CC-liSENSIYALI rasmlar
+ * (Wikimedia Commons, Flickr va boshqalar) manba sahifasi bilan qaytadi. */
+async function openverseImages(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  const body = await fetchHtml(
+    `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&page_size=${Math.max(num, 8)}`,
+    { timeoutMs: 9000, headers: { Accept: "application/json" } }
+  );
+  const j = JSON.parse(body) as {
+    results?: {
+      title?: string;
+      url?: string;
+      foreign_landing_url?: string;
+      thumbnail?: string;
+    }[];
+  };
+  const results: SearchResultItem[] = [];
+  const seen = new Set<string>();
+  for (const x of j.results ?? []) {
+    if (results.length >= num) break;
+    if (!x.url || !/^https?:\/\//i.test(x.url)) continue;
+    const key = x.url.replace(/[#?].*$/, "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const page =
+      x.foreign_landing_url && /^https?:\/\//i.test(x.foreign_landing_url)
+        ? x.foreign_landing_url
+        : x.url;
+    results.push({
+      name: (x.title || `Rasm — ${query}`).slice(0, 200),
+      url: page,
+      snippet: x.url,
+      host_name: hostOf(page),
+      favicon:
+        x.thumbnail && /^https?:\/\//i.test(x.thumbnail) ? x.thumbnail : undefined,
+    });
+  }
+  return results;
+}
+
+export async function bingImagesSearch(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  // Bing rasm qidiruvi VAQTI-VAQTI bilan JS-shell (metadata'siz) sahifa
+  // qaytaradi — shuning uchun bir nechta variant navbat bilan sinab ko'riladi:
+  //   1-2. Bing search/async endpoint'lari (eng dolzarb natijalar)
+  //   3.   Openverse API — har doim barqaror ishonchli zaxira
+  //   4.   Bing boshqa format — oxirgi urinish
+  // To'liq metadata kelgan variant darrov qaytariladi; hammasi bo'sh bo'lsa
+  // [] qaytadi (xato emas — bu tarmoqda rasm topilmadi).
+  const variants: { run: () => Promise<SearchResultItem[]> }[] = [
+    { run: () => bingImagesOnce("search", query, num, "") },
+    { run: () => bingImagesOnce("async", query, num, "") },
+    { run: () => openverseImages(query, num) },
+    { run: () => bingImagesOnce("search", query, num, "&FORM=IRFLTR&adlt=moderate") },
+  ];
+  for (const v of variants) {
+    try {
+      const results = await v.run();
+      if (results.length > 0) return results;
+    } catch {
+      /* HTTP/parse xato — keyingi variant */
+    }
+    await sleep(300 + Math.floor(Math.random() * 300));
+  }
+  return [];
+}
+
 // ===== 5b. Yahoo (Qwant o'rniga — DataDome server tomondan o'tmaydi) =====
 /**
  * Yahoo Search oddiy HTML qaytaradi (server-render, JS kerak emas) va
