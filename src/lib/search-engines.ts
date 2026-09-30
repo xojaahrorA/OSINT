@@ -21,12 +21,30 @@ import type { SearchResultItem } from "./osint";
 
 // dvigatellarni yangilaganda ham bu satr saqlansin — diagnostika kod
 // versiyasini shu belgi orqali aniqlaydi
-export const SEARCH_ENGINES_VERSION = "multi-14-engines-v5";
+export const SEARCH_ENGINES_VERSION = "multi-14-engines-v6";
 
 const UA_FIREFOX =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0";
 const UA_CHROME =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+/**
+ * UA rotatsiyasi — har so'rovda boshqa Chrome 124 tuzilishi (Windows/Mac/Linux).
+ * Hamma UA bir versiyada: chromeBrowserHeaders() dagi sec-ch-ua "124" deb
+ * da'vo qiladi — UA boshqa versiya bo'lsa dvigatellar mos kuchaytirishdan
+ * 403 berishi mumkin. Shuning uchun hovuz faqat 124 oilasidan.
+ */
+const UA_POOL = [
+  UA_CHROME,
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+];
+let uaIdx = Math.floor(Math.random() * 4);
+function rotateUa(): string {
+  uaIdx = (uaIdx + 1) % UA_POOL.length;
+  return UA_POOL[uaIdx];
+}
 
 /**
  * Chrome brauzer to'liq bo'lgan sarlavhalar to'plami — Mojeek/Brave kabi
@@ -88,6 +106,14 @@ function hostOf(url: string): string {
   }
 }
 
+/**
+ * Vaqtinchalik xatolar (429/500/502/503) — dvigatel serverining o'z muammosi.
+ * Darrov cooldown bermasdan BIR MARTA qisqa pauza bilan qayta so'raymiz:
+ * Yahoo 500 / Google Yangiliklar 503 ko'pincha 1-2 soniyada o'z-o'zidan ochiladi.
+ * Retry-After sarlavhasi 2s dan kichik bo'lsa aynan shuncha kutamiz.
+ */
+const TRANSIENT_HTTP = new Set([429, 500, 502, 503]);
+
 async function fetchHtml(
   url: string,
   opts: {
@@ -99,26 +125,45 @@ async function fetchHtml(
     body?: string;
   } = {}
 ): Promise<string> {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), opts.timeoutMs ?? 10000);
-  try {
-    const res = await fetch(url, {
-      method: opts.method ?? "GET",
-      body: opts.body,
-      signal: ac.signal,
-      headers: {
-        "User-Agent": opts.ua ?? UA_FIREFOX,
-        "Accept-Language": "en-US,en;q=0.9,uz;q=0.8",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        ...(opts.headers ?? {}),
-      },
-      cache: "no-store",
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
-  } finally {
-    clearTimeout(timer);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), opts.timeoutMs ?? 10000);
+    try {
+      const res = await fetch(url, {
+        method: opts.method ?? "GET",
+        body: opts.body,
+        signal: ac.signal,
+        headers: {
+          "User-Agent": opts.ua
+            ? opts.ua === UA_CHROME
+              ? rotateUa()
+              : opts.ua
+            : UA_FIREFOX,
+          "Accept-Language": "en-US,en;q=0.9,uz;q=0.8",
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          ...(opts.headers ?? {}),
+        },
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        if (TRANSIENT_HTTP.has(res.status) && attempt === 0) {
+          const ra = Number(res.headers.get("retry-after") ?? 0);
+          const wait =
+            Number.isFinite(ra) && ra > 0 && ra <= 2
+              ? ra * 1000
+              : 700 + Math.floor(Math.random() * 600);
+          await sleep(wait);
+          continue; // bir marta qayta urinish
+        }
+        throw new Error(`HTTP ${res.status}`);
+      }
+      return await res.text();
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  throw new Error("HTTP qayta urinish tugadi"); // yetib bo'lmaydi, TS uchun
 }
 
 // ===== Operator filtri =====

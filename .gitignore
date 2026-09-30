@@ -63,6 +63,7 @@ scripts/*
 !scripts/test-engines-v5.ts
 !scripts/test-leaks-photo.ts
 !scripts/test-profile-verify.ts
+!scripts/quick-engine-check.ts
 worklog.md
 .zscripts/
 .agent*
