@@ -59,6 +59,10 @@ upload/
 download/
 scripts/*
 !scripts/doctor.mjs
+!scripts/probe-engines.ts
+!scripts/test-engines-v5.ts
+!scripts/test-leaks-photo.ts
+!scripts/test-profile-verify.ts
 worklog.md
 .zscripts/
 .agent*
