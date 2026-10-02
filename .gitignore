@@ -64,6 +64,8 @@ scripts/*
 !scripts/test-leaks-photo.ts
 !scripts/test-profile-verify.ts
 !scripts/quick-engine-check.ts
+!scripts/test-relevance.ts
+!scripts/test-modules-live.ts
 worklog.md
 .zscripts/
 .agent*

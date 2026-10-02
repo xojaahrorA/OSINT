@@ -48,6 +48,21 @@ const OPEN_CONCURRENCY = 1;
 const QUERY_TIMEOUT_MS = 25000;
 const RETRY_DELAYS_MS = [1500, 3500, 7000];
 
+/**
+ * MAVZU-QATTIQ modullar: bu modullarda natija subyektga (maqsadga) mos
+ * bo'lishi Bilan BIRGA so'rov mavzu kalit so'zidan (parol/pasport/leak...
+ * /foto/rasm...) bittasini ham o'z ichiga olishi shart. Aks holda dvigatel
+ * bot-rejimida faqat ismga mos umumiy sahifalarni (Vikipediya, ism lug'atlari)
+ * qaytarib, modul natijalarini aloqasiz topilmalar bilan to'ldirib yuboradi
+ * (foydalanuvchi hisoboti: «parollar joyida boshqa ma'lumot chiqyapti»,
+ * «rasm qidiruvida boshqa narsalar chiqyapti»).
+ *
+ * photo-search faqat MATN dork so'rovlariga ta'sir qiladi — bing-images:
+ * prefiksli so'rovlar boshqa yo'l (bingImagesSearch) orqali o'tadi va o'z
+ * subyekt filtriga ega.
+ */
+const CONTEXT_STRICT_MODULES = new Set(["leak-search", "document-leaks", "photo-search"]);
+
 function nowTime(): string {
   const d = new Date();
   const p = (n: number) => String(n).padStart(2, "0");
@@ -278,6 +293,7 @@ export async function POST(req: NextRequest) {
         query: string;
         num: number;
         recency?: number;
+        requireContext?: boolean;
       }[] = [];
       for (const m of applicable) {
         for (const qs of buildQueries(m)) {
@@ -287,6 +303,7 @@ export async function POST(req: NextRequest) {
             query: qs,
             num: m.num ?? 6,
             recency: m.recency_days,
+            requireContext: CONTEXT_STRICT_MODULES.has(m.id),
           });
         }
       }
@@ -298,7 +315,8 @@ export async function POST(req: NextRequest) {
       const searchOnce = async (
         queryStr: string,
         num: number,
-        recency?: number
+        recency?: number,
+        requireContext = false
       ): Promise<SearchResultItem[]> => {
         if (zai) {
           try {
@@ -326,7 +344,7 @@ export async function POST(req: NextRequest) {
               }));
             // Ism-familiya qattiqligi Z.ai natijalariga ham qo'llanadi —
             // boshqa shaxs (faqat familiyasi mos) natijalari chiqib ketmasligi uchun
-            return relevanceFilter(queryStr, mapped);
+            return relevanceFilter(queryStr, mapped, { requireContext });
           } catch (e) {
             const msg = String(e);
             // 422 — dvigatel ushbu so'rov bo'yicha natija yo'q deb qaytardi: yuqoriga o'tkazamiz
@@ -338,7 +356,7 @@ export async function POST(req: NextRequest) {
             );
           }
         }
-        const open = await searchOpenWeb(queryStr, num);
+        const open = await searchOpenWeb(queryStr, num, { requireContext });
         lastEngineLabel = open.engine;
         if (open.results.length === 0) {
           openZeroStreak++;
@@ -367,12 +385,13 @@ export async function POST(req: NextRequest) {
       const searchWithRetry = async (
         queryStr: string,
         num: number,
-        recency?: number
+        recency?: number,
+        requireContext = false
       ): Promise<SearchResultItem[]> => {
         let lastErr: unknown;
         for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
           try {
-            return await searchOnce(queryStr, num, recency);
+            return await searchOnce(queryStr, num, recency, requireContext);
           } catch (e) {
             lastErr = e;
             const msg = String(e);
@@ -487,7 +506,7 @@ export async function POST(req: NextRequest) {
                     "bing-images"
                   );
                 })()
-              : await searchWithRetry(job.query, job.num, job.recency);
+              : await searchWithRetry(job.query, job.num, job.recency, job.requireContext);
             const seen = seenUrls.get(job.moduleId)!;
             const arr = collector.get(job.moduleId)!;
             let added = 0;

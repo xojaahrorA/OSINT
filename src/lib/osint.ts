@@ -566,7 +566,7 @@ export const OSINT_MODULES: OsintModuleDef[] = [
         // Instagram post/komentlari bevosita indekslanmaydi — lekin mirror
         // viewer saytlar (picuki/imginn/greatfon) indekslanadi va raqam
         // bio/post matnini ko'rsatadi
-        `${anyFmt} (site:picuki.com OR site:imginn.com OR site:greatfon.com OR site:instanavigation.com)`,
+        `${anyFmt} (site:picuki.com OR site:imginn.com OR site:greatfon.com)`,
         // Telegram qidiruv tizimlari — tgstat, lyzem, telemetr kanal bazalari
         `${anyFmt} (site:tgstat.uz OR site:tgstat.ru OR site:lyzem.com OR site:telemetr.io)`,
         // Ijtimoiy tarmoqlarda profillar/postlar
@@ -703,17 +703,17 @@ export const OSINT_MODULES: OsintModuleDef[] = [
     title: "Rasm izlari",
     icon: "Images",
     description:
-      "Rasmlar QAYERDA ishlatilgan: Bing Rasm qidiruvi (jonli — har rasmda manba sahifa va to'liq fayl havolasi), foto hostlar (imgur, flickr, postimages, avatanak), Instagram mirror foto sahifalari, Telegram/telegra.ph postlari",
+      "Rasmlar QAYERDA ishlatilgan: Bing Rasm qidiruvi (jonli — har rasmda manba sahifa va to'liq fayl havolasi), foto hostlar (imgur, flickr, postimages, ibb), Instagram mirror foto sahifalari, Telegram/telegra.ph postlari. Faqat maqsadga tegishli rasmlar qoldiriladi",
     appliesTo: ALL,
     queries: (t) => [
       // Maxsus prefiks — scan route shu so'rovni jonli Bing Rasm qidiruviga yuboradi
       `bing-images:${t}`,
-      `"${t}" (foto OR rasm OR photo OR img) (site:imgur.com OR site:flickr.com OR site:postimages.org OR site:avatanak.com)`,
+      `"${t}" (foto OR rasm OR photo OR img) (site:imgur.com OR site:flickr.com OR site:postimages.org OR site:ibb.co)`,
       `"${t}" (rasmlari OR fotolari OR photos OR gallery OR galereya)`,
     ],
     deepQueries: (t) => [
       `bing-images:${t} (profil OR avatar OR foto)`,
-      `"${t}" (site:picuki.com OR site:imginn.com OR site:greatfon.com OR site:instanavigation.com)`,
+      `"${t}" (site:picuki.com OR site:imginn.com OR site:greatfon.com)`,
       `"${t}" (site:pinterest.com OR site:tumblr.com OR site:imgur.com OR site:flickr.com)`,
       `"${t}" (site:t.me OR site:telegra.ph) (rasm OR foto OR photo OR media)`,
     ],

@@ -21,7 +21,7 @@ import type { SearchResultItem } from "./osint";
 
 // dvigatellarni yangilaganda ham bu satr saqlansin — diagnostika kod
 // versiyasini shu belgi orqali aniqlaydi
-export const SEARCH_ENGINES_VERSION = "multi-14-engines-v6";
+export const SEARCH_ENGINES_VERSION = "multi-14-engines-v7";
 
 const UA_FIREFOX =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0";
@@ -208,21 +208,18 @@ export function operatorFilter(
       if (!domainHit && !textHit) return false;
     }
     if (phrases.length > 0) {
-      const hay = `${r.name} ${r.snippet} ${r.url}`.toLowerCase();
-      if (!phrases.every((p) => hay.includes(p))) return false;
+      // MUHIM: qo'shtirnoqli iboralar OR-ALTERNATIVA bo'ladi — telefon
+      // formatlari («+99890..." YOKI "90 123 45 67») yoki dork variantlari
+      // («pasport seriya» YOKI «passport series»). Hammasi talab qilinsa
+      // haqiqiy natijalar ham yo'qolardi. Subyekt (maqsad) majburiyligini
+      // relevanceFilter alohida qattiq tekshiradi.
+      const hay = resultHay(r);
+      if (!phrases.some((p) => hay.includes(normalizeHay(p)))) return false;
     }
     return true;
   });
 }
 
-/**
- * Umumiy maqbuliyat filtri: natija (sarlavha+snippet+havola) maqsad so'zlaridan
- * kamida bittasini o'z ichiga olishi kerak. Bing va boshqalar bot aniqlanganda
- * BUTUNLAY boshqa so'rov natijalarini qaytaradi (masalan "ulugbek tukhtayev"
- * so'roviga Microsoft Teams yuklab olish sahifasi!) — bunday soxta topilmalar
- * shu filtrga tushib qoladi. OSINT maqsadlari (ism, handle, email, doman)
- * o'z ichiga olgan natijalar esa qiyin voyaga yetadi.
- */
 const STOPWORDS = new Set([
   "va", "bu", "uchun", "bilan", "yoki", "ham", "the", "and", "or", "of",
   "in", "on", "for", "with", "a", "an", "to", "kim", "nima",
@@ -242,16 +239,183 @@ function isPersonPhrase(phrase: string): boolean {
   );
 }
 
+// ===== Subyektga asoslangan aniqlik filtri (v7) =====
 /**
- * Ism-familiya mosligi uch darajali:
+ * MUAMMO (foydalanuvchi hisoboti, 2026-10):
+ *  - «Parollar chiqgan joylar umuman boshqa ma'lumot qidirayapti»
+ *  - «Pasport qidiruvida ham unga aloqasi bo'lmagan narsalar chiqyapti»
+ *  - «Rasm qidiruvida shu odamga tegishli rasm chiqmayapti»
+ *  - «Aloqasiz domenlar ham qo'shib qo'yib qidirib ketayapti»
+ *
+ * ILDIZLAR:
+ *  1. Eski filtr so'rovning HAR QANDAY tokenini «moslik» deb hisoblar edi —
+ *     «parol/password/pasport/leak» kabi MODUL kalit so'zlari ham. Natijada
+ *     «Kuchli parol qanday tuziladi» sahifasi maqsad ismi umuman bo'lmasa ham
+ *     o'tib ketardi («parol» so'zi uchun!).
+ *  2. Substring moslik: «karimov» «Karimova»ga ham mos tushardi — boshqa
+ *     shaxs natijalari o'tib ketardi.
+ *  3. Rasm qidiruvida filtr UMUMAN qo'llanilmasdi — Bing ommabop/boshqa
+ *     odamlarga tegishli rasmlar qaytarardi.
+ *
+ * YECHIM: so'rovdan SUBYEKT (maqsad) ajratiladi — u natijada MAJBURIY.
+ * Modul kalit so'zlari faqat ikkinchi darajali kontekst (tartiblash uchun).
+ * Moslik so'z chegarasi bilan: «dilshod» «dilshodbek»ga mos emas.
+ */
+
+/** Apostrof/tire variantlarini birlashtirib kichik harfga o'tkazish
+ * («O'tkir» = «O'tkir» = «O'tkir» — U+2019/U+02BB/U+02BC farqi yo'qoladi) */
+function normalizeHay(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[’ʻʼ`´]/g, "'")
+    .replace(/[–—]/g, "-");
+}
+
+/** Natija haystack'i — URL decode bilan (kirill slug'lar ko'rinadi) */
+function resultHay(r: SearchResultItem): string {
+  let url = r.url;
+  try {
+    url = decodeURIComponent(url);
+  } catch {
+    /* xom holda qoladi */
+  }
+  return normalizeHay(`${r.name} ${r.snippet} ${url}`);
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const boundaryCache = new Map<string, RegExp>();
+
+/** So'z chegarali moslik: «karimov» «Karimova»ga, «dilshod» «dilshodbek»ga
+ * mos EMAS. Harf/raqam bilan davom etsa — boshqa so'z hisoblanadi. */
+function boundaryMatch(hay: string, token: string): boolean {
+  const t = normalizeHay(token);
+  if (!t || !/[a-z0-9\u0400-\u04ff]/.test(t)) return false;
+  let re = boundaryCache.get(t);
+  if (!re) {
+    re = new RegExp(
+      `(?<![a-z0-9\\u0400-\\u04ff])${escapeRe(t)}(?![a-z0-9\\u0400-\\u04ff])`
+    );
+    if (boundaryCache.size > 500) boundaryCache.clear();
+    boundaryCache.set(t, re);
+  }
+  return re.test(hay);
+}
+
+/** Subyekt spetsifikatsiyasi — so'rov qayerdan kelganidan qat'i nazar */
+interface SubjectSpec {
+  /** MAJBURIY (kamida bittasi) — so'z chegarali moslik (ism/username/domen) */
+  anyBoundary: string[];
+  /** MAJBURIY (kamida bittasi) — sodda substring (telefon formatlari, raqamlar) */
+  anyExact: string[];
+  /** Ism-familiya rejimi: barcha so'zlar full/partial (initsial ruxsat) */
+  person: string[] | null;
+  /** Ixtiyoriy kontekst (modul kalit so'zlari) — moslari oldinga suriladi */
+  context: string[];
+}
+
+function specHasSubject(spec: SubjectSpec): boolean {
+  return (
+    spec.person !== null ||
+    spec.anyBoundary.length > 0 ||
+    spec.anyExact.length > 0
+  );
+}
+
+/**
+ * So'rov subyektini ajratish:
+ *  - Qo'shtirnoqli iboralar: BIRINCHISI maqsad («"Muhammad Karimov" (pasport
+ *    OR ... OR "ID karta")» — maqsad ism, «ID karta» kontekst). 6+ raqamli
+ *    iboralar telefon/ID formatlari — barchasi ANY-of majburiy (formatning
+ *    o'zi YOKI faqat raqamlari bilan topiladi).
+ *  - Qo'shtirnoqsiz: qavslar TASHQARISIDAGI so'zlar («Muhammad Karimov
+ *    (profil OR avatar)» → ism-familiya qavsdan tashqarida). 2-3 sof harfli
+ *    so'z bo'lsa ism-familiya rejimi; aks holda reformulatsiya qilingan
+ *    so'rov — birinchi so'z maqsad, qolgani kontekst.
+ */
+function extractSubject(query: string): SubjectSpec {
+  const spec: SubjectSpec = {
+    anyBoundary: [],
+    anyExact: [],
+    person: null,
+    context: [],
+  };
+
+  const quotes = [...query.matchAll(/"([^"]{2,60})"/g)].map((m) => m[1]);
+  for (let i = 0; i < quotes.length; i++) {
+    const q = quotes[i];
+    const digits = q.replace(/\D/g, "");
+    if (digits.length >= 6) {
+      // Telefon/ID formatlari — format YOKI faqat raqamlar bilan ham mos
+      spec.anyExact.push(q, digits);
+      continue;
+    }
+    if (i === 0) {
+      if (isPersonPhrase(q)) spec.person = [...new Set(normalizeHay(q).split(/\s+/))];
+      else spec.anyBoundary.push(q);
+    } else {
+      spec.context.push(...normalizeHay(q).split(/\s+/).filter(Boolean));
+    }
+  }
+
+  if (quotes.length === 0) {
+    // Qavslar tashqarisidagi so'zlar — maqsad o'sha yerda
+    const outside = query.replace(/\([^)]*\)/g, " ");
+    const cleanCore = outside
+      .replace(/site:\S+|filetype:\S+|inurl:\S+|intitle:\S+|\bOR\b|[()"]/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const coreWords = normalizeHay(cleanCore).split(/\s+/).filter(Boolean);
+
+    if (
+      coreWords.length >= 2 &&
+      coreWords.length <= 3 &&
+      coreWords.every((w) => /^[a-z\u0400-\u04ff'.-]{2,}$/.test(w))
+    ) {
+      // Ism-familiya ko'rinishidagi so'rov — 2 ta so'z majburiy
+      spec.person = [...new Set(coreWords.slice(0, 2))];
+    } else if (coreWords.length > 0) {
+      // Soddalashtirilgan (reformulatsiya) so'rov: birinchi so'z = maqsad
+      const first = coreWords[0];
+      if (first.length >= 3) spec.anyBoundary.push(first);
+      // Yalang'och uzun raqamlar (telefon) — formatdan qat'i nazar
+      for (const w of coreWords) {
+        const d = w.replace(/\D/g, "");
+        if (d.length >= 6) spec.anyExact.push(w, d);
+      }
+      spec.context.push(...coreWords.slice(1));
+    }
+  }
+
+  spec.anyBoundary = [...new Set(spec.anyBoundary)];
+  spec.anyExact = [...new Set(spec.anyExact)];
+
+  // Kontekst zaxirasi: qo'shtirnoqsiz qolgan kalit so'zlar (OR-guruhlar
+  // ichidagilar) — maqsad va operatorlar olib tashlangan. Modul mavzusi
+  // majburiy bo'lgan modullar (leak/document) uchun ishlatiladi.
+  const withoutQuotes = query.replace(/"[^"]*"/g, " ");
+  const fallbackCore = withoutQuotes
+    .replace(/site:\S+|filetype:\S+|inurl:\S+|intitle:\S+|\bOR\b|[()"]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  spec.context.push(...normalizeHay(fallbackCore).split(/\s+/).filter(Boolean));
+  const subjWords = new Set([...(spec.person ?? []), ...spec.anyBoundary]);
+  spec.context = [...new Set(spec.context.filter((w) => w.length >= 3 && !subjWords.has(w)))];
+  return spec;
+}
+
+/**
+ * Ism-familiya mosligi uch darajali — SO'Z CHEGARASI bilan:
  *  - "full"    — har bir so'z aniq yoki initsial ko'rinishda bor
  *                ("M. Karimov" — "Muhammad Karimov" uchun mos)
- *  - "partial" — familiya aniq bor + kamida 2 ta so'z mos
- *  - "none"    — mos emas (faqat familiya uchragan ho'kiz natijalar)
+ *  - "partial" — familiya aniq (chegara bilan!) + kamida 2 ta so'z mos
+ *  - "none"    — mos emas («Karimova» «Karimov» so'roviga mos kelmaydi)
  */
-function personMatch(hay: string, words: string[]): "full" | "partial" | "none" {
+function personMatchB(hay: string, words: string[]): "full" | "partial" | "none" {
   const checks = words.map((w) => {
-    if (hay.includes(w)) return "full" as const;
+    if (boundaryMatch(hay, w)) return "full" as const;
     // Initsial: "Muhammad" → "M." (matnda qisqa yozilgan ism)
     if (hay.includes(`${w[0]}.`)) return "initial" as const;
     return "none" as const;
@@ -263,7 +427,18 @@ function personMatch(hay: string, words: string[]): "full" | "partial" | "none" 
   return "none";
 }
 
-export function relevanceFilter(
+/** Subyekt majburiy shartga mosladimi? */
+function subjectHasMatch(spec: SubjectSpec, hay: string): boolean {
+  if (spec.person) return personMatchB(hay, spec.person) !== "none";
+  if (spec.anyBoundary.length > 0 && spec.anyBoundary.some((t) => boundaryMatch(hay, t)))
+    return true;
+  if (spec.anyExact.length > 0 && spec.anyExact.some((t) => hay.includes(normalizeHay(t))))
+    return true;
+  return false;
+}
+
+/** Subyekt ajratib bo'lmagan so'rovlar uchun zaxira: eski stem-moslik */
+function stemFallbackFilter(
   query: string,
   results: SearchResultItem[]
 ): SearchResultItem[] {
@@ -272,8 +447,6 @@ export function relevanceFilter(
     .split(/[^a-z0-9\u0400-\u04ff'.@]+/i)
     .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
   if (tokens.length === 0) return results;
-
-  // stamlar: "ma'lumotlar" → "ma'lumo", "profiles" → "profil" (yaxlit moslik uchun)
   const stems = new Set<string>();
   for (const t of tokens) {
     stems.add(t);
@@ -283,62 +456,50 @@ export function relevanceFilter(
     }
   }
   const stemArr = [...stems];
-  const matchesAny = (r: SearchResultItem) => {
-    const hay = `${r.name} ${r.snippet} ${r.url}`.toLowerCase();
-    return stemArr.some((s) => hay.includes(s));
-  };
+  return results.filter((r) => stemArr.some((s) => resultHay(r).includes(s)));
+}
 
-  // --- Ism-familiya qattiqligi (noto'g'ri shaxs natijalariga qarshi) ---
-  //
-  // Muammo: "Muhammad Karimov" qidiruvida dvigatellar faqat familiyasi
-  // mos boshqa shaxslar (Islom Karimov, Karimova...) sahifalarini ham
-  // qaytaradi. OSINT uchun boshqa shaxs natijasi xavfli.
-  //
-  // Darajalar: full (hamma so'z aniq/initsial) → partial (familiya + 2 so'z)
-  // → none (chetlanadi). Faqat familiyasi mos soxta natijalar o'tmaydi.
-  //
-  // 1-qoida: qo'shtirnoqli ibora 2-4 harfli so'zdan iborat bo'lsa
-  //    ("Muhammad Karimov").
-  const namePhrases = [...query.matchAll(/"([^"]{2,60})"/g)]
-    .map((m) => m[1])
-    .filter(isPersonPhrase);
-  if (namePhrases.length > 0) {
-    const nameWords = [
-      ...new Set(namePhrases.flatMap((p) => p.toLowerCase().split(/\s+/))),
-    ];
-    const graded = results.filter((r) => {
-      const hay = `${r.name} ${r.snippet} ${r.url}`.toLowerCase();
-      const g = personMatch(hay, nameWords);
-      return g === "full" || g === "partial";
-    });
-    return graded;
+/**
+ * Umumiy aniqlik filtri (v7): MAQSAD (subyekt) majburiy, kalit so'zlar
+ * faqat kontekst. «Bing bot rejimida butunlay boshqa so'rov natijalarini
+ * qaytaradi» holatida ham maqsad keltirilmagan natija o'tmaydi.
+ *
+ * opts.requireContext=true (leak/document modullari): natija MAVZU kalit
+ * so'zidan KAMIDA BITTASINI ham o'z ichiga olishi shart — aks holda
+ * «Dilshod - Vikipediya» kabi faqat ismga mos umumiy sahifalar parol/pasport
+ * modullarini to'ldirib yuborardi (jonli testda topilgan holat).
+ */
+export function relevanceFilter(
+  query: string,
+  results: SearchResultItem[],
+  opts?: { requireContext?: boolean }
+): SearchResultItem[] {
+  const spec = extractSubject(query);
+  if (!specHasSubject(spec)) return stemFallbackFilter(query, results);
+
+  let kept = results.filter((r) => subjectHasMatch(spec, resultHay(r)));
+
+  // Modul mavzusi majburiy: kontekst kalit so'zlaridan bittasi bo'lishi shart
+  if (opts?.requireContext && spec.context.length > 0) {
+    const strictCtx = spec.context.filter((c) => c.length >= 4);
+    if (strictCtx.length > 0) {
+      kept = kept.filter((r) => {
+        const hay = resultHay(r);
+        return strictCtx.some((c) => hay.includes(c));
+      });
+    }
   }
 
-  // 2-qoida: qo'shtirnoqsiz, 2-3 ta sof harfli so'z (soddalashtirilgan
-  //    ism-familiya so'rovi: "Muhammad Karimov facebook") — birinchi 2 ta
-  //    so'z (ism va familiya) majburiy, qolgani (platforma so'zi) ixtiyoriy.
-  const cleanCore = query
-    .replace(/site:\S+|filetype:\S+|inurl:\S+|intitle:\S+|\bOR\b|[()"]/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const coreWords = cleanCore
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (
-    coreWords.length >= 2 &&
-    coreWords.length <= 3 &&
-    coreWords.every((w) => /^[a-z\u0400-\u04ff'.-]{2,}$/i.test(w))
-  ) {
-    const lead = coreWords.slice(0, 2);
-    return results.filter((r) => {
-      const hay = `${r.name} ${r.snippet} ${r.url}`.toLowerCase();
-      const g = personMatch(hay, lead);
-      return g === "full" || g === "partial";
-    });
+  // Kontekstga (modul kalit so'zlariga) mos topilmalar oldinga suriladi —
+  // subyekt mos bo'lgan ichida qaysi biri mavzuga yaqinligi bilan tartib
+  if (spec.context.length > 0 && kept.length > 1) {
+    const ctxMiss = (r: SearchResultItem) => {
+      const hay = resultHay(r);
+      return spec.context.some((c) => hay.includes(c)) ? 0 : 1;
+    };
+    kept.sort((a, b) => ctxMiss(a) - ctxMiss(b)); // stable sort — tartib saqlanadi
   }
-
-  return results.filter(matchesAny);
+  return kept;
 }
 
 /** So'rovda qidiruv operatorlari bormi? */
@@ -921,6 +1082,28 @@ interface BingImageMeta {
   desc?: string;
 }
 
+/**
+ * Rasm nomzodlarini subyekt bo'yicha tekshirish (testlanadigan toza funksiya).
+ * Rasm qidiruvida Bing/Openverse ommabop yoki BOSHQA ODAMga tegishli rasmlar
+ * qaytarishi mumkin — shuning uchun maqsad (ism/username) rasm sarlavhasi,
+ * manba sahifa yoki rasm fayl havolasida (murl ko'pincha username saqlaydi)
+ * MAJBURIY bo'ladi. Qaytaradi: har nomzod uchun saqlash kerakmi?
+ */
+export function imageSubjectKeep(
+  query: string,
+  entries: { title?: string; desc?: string; page: string; file: string }[]
+): boolean[] {
+  const spec = extractSubject(query);
+  const strict = specHasSubject(spec);
+  return entries.map((m) =>
+    !strict ||
+    subjectHasMatch(
+      spec,
+      normalizeHay(`${m.title ?? ""} ${m.desc ?? ""} ${m.page} ${m.file}`)
+    )
+  );
+}
+
 async function bingImagesOnce(
   endpoint: "search" | "async",
   query: string,
@@ -961,9 +1144,20 @@ async function bingImagesOnce(
   }
   const results: SearchResultItem[] = [];
   const seen = new Set<string>();
-  for (const j of metas) {
-    if (results.length >= num) break;
+  // RASM SUBYEKT FILTRI — boshqa odam/ommabop rasmlar chetlanadi
+  const keeps = imageSubjectKeep(
+    query,
+    metas.map((j) => ({
+      title: j.t,
+      desc: j.desc,
+      page: j.purl && /^https?:\/\//i.test(j.purl) ? j.purl : (j.murl ?? ""),
+      file: j.murl ?? "",
+    }))
+  );
+  for (let i = 0; i < metas.length && results.length < num; i++) {
+    const j = metas[i];
     if (!j.murl || !/^https?:\/\//i.test(j.murl)) continue;
+    if (!keeps[i]) continue;
     const key = j.murl.replace(/[#?].*$/, "");
     if (seen.has(key)) continue;
     seen.add(key);
@@ -1001,9 +1195,23 @@ async function openverseImages(
   };
   const results: SearchResultItem[] = [];
   const seen = new Set<string>();
-  for (const x of j.results ?? []) {
-    if (results.length >= num) break;
+  // Rasm subyekt filtri — bingImagesOnce bilan bir xil qattiqlik
+  const rawResults = j.results ?? [];
+  const keeps = imageSubjectKeep(
+    query,
+    rawResults.map((x) => ({
+      title: x.title,
+      page:
+        x.foreign_landing_url && /^https?:\/\//i.test(x.foreign_landing_url)
+          ? x.foreign_landing_url
+          : (x.url ?? ""),
+      file: x.url ?? "",
+    }))
+  );
+  for (let i = 0; i < rawResults.length && results.length < num; i++) {
+    const x = rawResults[i];
     if (!x.url || !/^https?:\/\//i.test(x.url)) continue;
+    if (!keeps[i]) continue;
     const key = x.url.replace(/[#?].*$/, "");
     if (seen.has(key)) continue;
     seen.add(key);
@@ -1554,7 +1762,8 @@ async function tryEngine(
   e: { name: string; fn: EngineFn },
   query: string,
   num: number,
-  errors: string[]
+  errors: string[],
+  requireContext = false
 ): Promise<SearchResultItem[] | null> {
   // Sovitish rejimida — o'tkazib yuboramiz (timeout kutmaymiz)
   if (isCoolingDown(e.name)) {
@@ -1571,7 +1780,7 @@ async function tryEngine(
       ENGINE_TIMEOUTS[e.name] ?? DEFAULT_ENGINE_TIMEOUT_MS
     );
     // Operator filtri dvigatel ichida, bu yerda umumiy maqbuliyat filtri:
-    const r = relevanceFilter(query, raw);
+    const r = relevanceFilter(query, raw, { requireContext });
     if (r.length > 0) return r;
     errors.push(
       raw.length > 0
@@ -1618,7 +1827,8 @@ let rrPointer = 0;
 
 export async function searchOpenWeb(
   query: string,
-  num: number
+  num: number,
+  opts: { requireContext?: boolean } = {}
 ): Promise<OpenSearchResult> {
   // 0) Kesh — bir xil so'rov 8 daqiqa ichida qayta so'ralgan bo'lsa darrov javob
   const cached = cacheGet(query, num);
@@ -1645,7 +1855,10 @@ export async function searchOpenWeb(
     if (Date.now() > deadline) break;
     const pair = ENGINE_CHAIN.slice(i, i + 2);
     const settled = await Promise.all(
-      pair.map(async (e) => ({ e, res: await tryEngine(e, query, num, errors) }))
+      pair.map(async (e) => ({
+        e,
+        res: await tryEngine(e, query, num, errors, opts.requireContext ?? false),
+      }))
     );
     for (const s of settled) {
       if (s.res) return success(s.e.name, s.res);
@@ -1659,7 +1872,7 @@ export async function searchOpenWeb(
       errors.push(`Soddalashtirilgan so'rov: "${simplified}"`);
       for (const e of REFORM_ENGINES) {
         if (Date.now() > deadline) break;
-        const r = await tryEngine(e, simplified, num, errors);
+        const r = await tryEngine(e, simplified, num, errors, opts.requireContext ?? false);
         if (r) {
           // Reformulatsiya natijasi ham ASL so'rov kalitida keshlanadi
           cacheSet(query, num, r, `${e.name}*`);
