@@ -19,6 +19,7 @@ import {
 } from "react";
 import {
   AtSign,
+  Building2,
   Globe,
   Mail,
   Maximize2,
@@ -55,6 +56,7 @@ const KIND_COLOR: Record<GraphNodeKind, string> = {
   name: "#fb7185",
   domain: "#2dd4bf",
   ip: "#fb923c",
+  company: "#e879f9",
   result: "#64748b",
 };
 
@@ -67,6 +69,7 @@ const KIND_LABEL: Record<GraphNodeKind, string> = {
   name: "Ism",
   domain: "Domen",
   ip: "IP",
+  company: "Kompaniya",
 };
 
 const KIND_ICON: Record<Exclude<GraphNodeKind, "result">, React.ComponentType<LucideProps>> = {
@@ -77,10 +80,11 @@ const KIND_ICON: Record<Exclude<GraphNodeKind, "result">, React.ComponentType<Lu
   name: User,
   domain: Globe,
   ip: NetworkIcon,
+  company: Building2,
 };
 
 /** Filtr chip'larida ko'rinadigan turlar (maqsad doim ko'rinadi) */
-const FILTER_KINDS: GraphNodeKind[] = ["result", "username", "email", "phone", "name", "domain", "ip"];
+const FILTER_KINDS: GraphNodeKind[] = ["result", "username", "email", "phone", "name", "domain", "ip", "company"];
 
 interface P {
   x: number;

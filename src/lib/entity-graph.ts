@@ -65,6 +65,7 @@ const ENTITY_CAPS: Record<TargetType, number> = {
   phone: 6,
   name: 6,
   ip: 4,
+  company: 6,
 };
 const ENTITY_ORDER: TargetType[] = ["email", "username", "phone", "name", "domain", "ip"];
 

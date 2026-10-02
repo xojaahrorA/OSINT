@@ -66,6 +66,7 @@ scripts/*
 !scripts/quick-engine-check.ts
 !scripts/test-relevance.ts
 !scripts/test-modules-live.ts
+!scripts/test-new-profiles.ts
 worklog.md
 .zscripts/
 .agent*

@@ -43,6 +43,7 @@ const CAPS: Record<TargetType, number> = {
   name: 12,
   domain: 20,
   ip: 10,
+  company: 15,
 };
 
 const KIND_ORDER: TargetType[] = ["phone", "email", "username", "name", "domain", "ip"];

@@ -27,7 +27,7 @@ import {
 
 export const maxDuration = 180;
 
-const VALID_TYPES: TargetType[] = ["username", "email", "phone", "name", "domain", "ip"];
+const VALID_TYPES: TargetType[] = ["username", "email", "phone", "name", "domain", "ip", "company"];
 
 // So'rovlar orasidagi pauza va parallellik — qidiruv dvigatelining rate-limit
 // (429 Too Many Requests) chekloviga tushmaslik uchun.
@@ -246,6 +246,12 @@ export async function POST(req: NextRequest) {
             `[Ism variantlari] ${vs.length} ta yozilish tekshiriladi: ${vs.slice(0, 6).join(" · ")}${vs.length > 6 ? " ..." : ""}`
           );
         }
+      }
+      if (targetType === "company") {
+        log(
+          "info",
+          "Kompaniya skani: reestr (orginfo.uz/opencorporates), sud/tender, sharhlar, rasmiy sahifalar va firibgarlik signallari tekshiriladi. Agar kompaniyaning sayti bo'lsa — sayt manzilini (URL) bering: WHOIS, DNS, subdomenlar va server tahlili ham qo'shiladi."
+        );
       }
       if (directPlanned.length > 0) {
         log(

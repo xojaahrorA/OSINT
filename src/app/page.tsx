@@ -15,6 +15,9 @@ import {
   List,
   Square,
   ShieldAlert,
+  Landmark,
+  Scale,
+  ShieldQuestion,
   Loader2,
   Bookmark,
   Clock,
@@ -171,6 +174,13 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "leak-search": KeyRound,
   "document-leaks": FileBadge,
   "photo-search": Images,
+  // Yangi: kompaniya profili va ommaviy shaxs
+  "company-signals": ShieldQuestion,
+  "company-registry": Landmark,
+  "company-risk": Scale,
+  "company-social": Building2,
+  "company-fraud": ShieldAlert,
+  "person-public": UserRoundSearch,
 };
 
 const EXAMPLES: { type: TargetType; query: string }[] = [
@@ -178,6 +188,7 @@ const EXAMPLES: { type: TargetType; query: string }[] = [
   { type: "email", query: "info@example.uz" },
   { type: "phone", query: "+998901234567" },
   { type: "name", query: "Muhammad Karimov" },
+  { type: "company", query: "Uzum Market" },
   { type: "domain", query: "nuu.uz" },
   { type: "ip", query: "8.8.8.8" },
 ];
@@ -1663,6 +1674,12 @@ export default function Home() {
             </Badge>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <Button asChild variant="outline" size="sm" className="gap-2">
+              <a href="/rasm-tahlil">
+                <Images className="w-4 h-4" />
+                <span className="hidden sm:inline">Rasm/Video tahlil</span>
+              </a>
+            </Button>
             <DiagnosticsDialog>
               <Button variant="outline" size="sm" className="gap-2">
                 <Activity className="w-4 h-4" />

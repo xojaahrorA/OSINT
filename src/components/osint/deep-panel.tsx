@@ -43,6 +43,7 @@ const KIND_LABELS: Record<TargetType, string> = {
   name: "ISM",
   domain: "DOMEN",
   ip: "IP",
+  company: "KOMPANIYA",
 };
 
 export function DeepPanel({

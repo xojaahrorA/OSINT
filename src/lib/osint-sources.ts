@@ -72,15 +72,19 @@ const item = (
   host: string
 ): SearchResultItem => ({ name, url, snippet, host_name: host });
 
-/** Foydalanuvchi kiritgan narsadan toza domen ajratadi (URL bo'lsa ham) */
+/** Foydalanuvchi kiritgan narsadan toza domen ajratadi (URL bo'lsa ham).
+ * Natija haqiqiy domen ko'rinishida bo'lmasa (bo'sh joy bor yoki nuqta yo'q —
+ * masalan «Uzum Market» kabi kompaniya nomi) — bo'sh satr qaytaradi. */
 export function cleanDomain(raw: string): string {
-  return raw
+  const d = raw
     .trim()
     .toLowerCase()
     .replace(/^[a-z]+:\/\//, "")
     .replace(/[/?#].*$/, "")
     .replace(/^www\./, "")
     .replace(/\.$/, "");
+  if (!d || /\s/.test(d) || !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(d)) return "";
+  return d;
 }
 
 export function isIpv4(s: string): boolean {
@@ -569,6 +573,128 @@ async function reverseWhoisSource(rawTarget: string): Promise<SearchResultItem[]
       )
     );
   }
+  return out;
+}
+
+// ===== Kompaniya firibgarlik signallari (company-signals) =====
+
+const PRIVACY_WHOIS_RE = /(privacy|whoisguard|proxy|redact|protect|withheld|domainsbyproxy|anonim)/i;
+
+async function companySignalsSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const t = rawTarget.trim();
+  const domain = cleanDomain(t);
+  const out: SearchResultItem[] = [];
+  const risky: string[] = [];
+  const good: string[] = [];
+
+  if (domain) {
+    // 1) Domen yoshi — RDAP ro'yxatga olish sanasi
+    try {
+      const d = await fj<RdapDomain>(`https://rdap.org/domain/${domain}`, 9000);
+      const regISO = d?.events?.find((e) => e.eventAction === "registration")?.eventDate;
+      if (regISO) {
+        const days = Math.floor((Date.now() - new Date(regISO).getTime()) / 86400000);
+        const years = Math.max(0, days / 365.25).toFixed(1);
+        if (days < 180) {
+          risky.push("yosh domen");
+          out.push(
+            item(
+              `Xavf belgisi: domeni juda yosh (${years} yil)`,
+              `https://client.rdap.org/?object=${domain}`,
+              `Domen ${regISO.slice(0, 10)} da ro'yxatdan o'tgan. 6 oydan yangi domenlar «bugun ochilgan do'kon» firibgarliklarida ko'p uchraydi — rasmiy kompaniyalar odatda eski domendan foydalanadi.`,
+              "client.rdap.org"
+            )
+          );
+        } else {
+          good.push(`domen ${years} yil`);
+          out.push(
+            item(
+              `Domen yoshi: ${years} yil — ijobiy belgi`,
+              `https://client.rdap.org/?object=${domain}`,
+              `Domen ${regISO.slice(0, 10)} da ro'yxatga olingan. Uzoq tarix — firibgarlik ehtimolini kamaytiradi (eskirgan sayt bo'lsa, Wayback arxivida tarixini ko'ring).`,
+              "client.rdap.org"
+            )
+          );
+        }
+      }
+      // 2) WHOIS maxfiyligi — egasi yashirilganmi
+      const mails = [...(d?.entities ?? []).flatMap((e) => rdapEmails(e))];
+      const privacyMail = mails.find((m) => PRIVACY_WHOIS_RE.test(m));
+      if (privacyMail) {
+        risky.push("WHOIS maxfiy");
+        out.push(
+          item(
+            "Xavf belgisi: WHOIS ma'lumotlari maxfiylashtirilgan",
+            `https://client.rdap.org/?object=${domain}`,
+            `Egasi identifikatsiyasi privacy/proxy xizmati orqali yashirilgan (${privacyMail.slice(0, 50)}). Bu o'z-o'zidan xato emas — lekin firibgar saytlarda tez-tez uchraydi, rasmiy kompaniyalar odatda ochiq yoziladi.`,
+            "client.rdap.org"
+          )
+        );
+      }
+    } catch {
+      /* RDAP javob bermadi — keyingi tekshiruvga o'tamiz */
+    }
+
+    // 3) Server egasi, proxy/hosting belgilari — ip-api.com
+    try {
+      const ans = await doh(domain, "A");
+      const ip = ans[0]?.data;
+      if (ip && isIpv4(ip)) {
+        const geo = await fj<IpApiResp>(
+          `http://ip-api.com/json/${ip}?fields=status,country,city,isp,org,proxy,hosting,reverse`,
+          8000
+        );
+        if (geo?.status === "success") {
+          const flags = [geo.proxy ? "PROXY/VPN" : "", geo.hosting ? "hosting" : ""].filter(Boolean);
+          if (geo.proxy) risky.push("IP proxy orqali");
+          out.push(
+            item(
+              `Server: ${[geo.isp ?? geo.org, geo.country].filter(Boolean).join(", ")}`,
+              `https://ipinfo.io/${ip}`,
+              [
+                geo.reverse ? `Reverse DNS: ${geo.reverse}` : "",
+                flags.length ? `Belgilar: ${flags.join(", ")}` : "",
+                geo.proxy
+                  ? "Diqqat: sayt IP si proxy orqali yashirilgan — anonimlashtirish belgisi, kelib chiqishini aniqlash qiyinlashadi"
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" | ") || "Hosting/IP ma'lumotlari",
+              "ipinfo.io"
+            )
+          );
+        }
+      }
+    } catch {
+      /* IP aniqlanmadi */
+    }
+  }
+
+  // 4) Davlat reestri havolasi — kompaniya NOMI bo'lsa ham ishlaydi
+  out.push(
+    item(
+      `Davlat reestrida tekshiring: ${t}`,
+      `https://orginfo.uz/search?q=${encodeURIComponent(t)}`,
+      "orginfo.uz — O'zbekiston yuridik shaxslari reestri: rasmiy nomi, ro'yxatga olingan sana, rahbar, ta'sischilar, STIR va faoliyat holati. Kompaniya bu yerda topilmasa — rasmiy ro'yxatdan o'tmagan bo'lishi mumkin, bu kuchli xavf belgisi.",
+      "orginfo.uz"
+    )
+  );
+
+  // 5) Umumiy xulosa
+  out.push(
+    item(
+      risky.length > 0
+        ? `Firibgarlik signallari: ${risky.length} ta shubhali belgi — ${risky.join(", ")}`
+        : `Firibgarlik signallari: aniq xavf belgisi yo'q${good.length ? ` (${good.join(", ")})` : ""}`,
+      domain
+        ? `https://www.scamadviser.com/check-website/${domain}`
+        : `https://orginfo.uz/search?q=${encodeURIComponent(t)}`,
+      risky.length > 0
+        ? "Yuqoridagi belgilar o'zi firibgarlik isboti EMAS — lekin to'lov yoki kelishuvdan oldin reestr (orginfo.uz), mijoz sharhlari va rasmiy sahifalarni birga tekshiring. Rasmiy sahifalar haqiqiyligini obunachilar soni, posting sanasi va domendagi havolalardan solishtiring."
+        : "Aniq xavf belgisi topilmadi. Baribir «Sud, tender va sharhlar» hamda «Firibgarlik eslatmalari» modullari natijalarini ko'rib chiqing — ochiq manbalarda shikoyat bo'lsa shu yerda ko'rinadi.",
+      "scamadviser.com"
+    )
+  );
   return out;
 }
 
@@ -1438,6 +1564,7 @@ export const DIRECT_RUNS: Record<
   subdomains: subdomainsSource,
   "site-probe": siteProbeSource,
   recon: reconSource,
+  "company-signals": companySignalsSource,
   // IP
   "ip-intel": ipIntelSource,
   "whois-ip": rdapIpSource,
@@ -1468,8 +1595,10 @@ export const DIRECT_RUNS: Record<
 const PREMIUM_SEARCH_IDS = ["serper", "brave-api", "google-cse", "tavily"];
 
 export function directSourceIdsFor(type: TargetType): string[] {
-  return type === "domain"
-    ? ["dns", "whois", "subdomains", "site-probe", "recon", "shodan", "hunter", "otx", ...PREMIUM_SEARCH_IDS]
+  return type === "company"
+    ? ["company-signals", "whois", "dns", "subdomains", "site-probe", "recon", ...PREMIUM_SEARCH_IDS]
+    : type === "domain"
+    ? ["dns", "whois", "subdomains", "site-probe", "recon", "company-signals", "shodan", "hunter", "otx", ...PREMIUM_SEARCH_IDS]
     : type === "ip"
       ? ["ip-intel", "whois-ip", "ptr-recon", "shodan", "ipinfo", "otx", ...PREMIUM_SEARCH_IDS]
       : type === "email"

@@ -27,6 +27,7 @@ const KIND_LABELS: Record<PivotCandidate["kind"], string> = {
   name: "ISM",
   domain: "DOMEN",
   ip: "IP",
+  company: "KOMPANIYA",
 };
 
 export function ResultCard({

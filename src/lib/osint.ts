@@ -12,13 +12,15 @@ export type TargetType =
   | "phone"
   | "name"
   | "domain"
-  | "ip";
+  | "ip"
+  | "company";
 
 export const TARGET_TYPES: { value: TargetType; label: string; hint: string; example: string }[] = [
   { value: "username", label: "Username", hint: "Foydalanuvchi nomi (@belgisiz)", example: "dilshod_dev" },
   { value: "email", label: "Email", hint: "Elektron pochta manzili", example: "info@example.uz" },
   { value: "phone", label: "Telefon", hint: "Raqam (xalqaro formatda)", example: "+998901234567" },
   { value: "name", label: "Ism-familiya", hint: "Shaxsning to'liq ismi", example: "Muhammad Karimov" },
+  { value: "company", label: "Kompaniya/Tashkilot", hint: "Kompaniya nomi yoki sayt manzili (URL)", example: "Uzum Market yoki uzum.uz" },
   { value: "domain", label: "Domen", hint: "Sayt nomi (https://siz)", example: "example.uz" },
   { value: "ip", label: "IP manzil", hint: "IPv4 yoki IPv6", example: "8.8.8.8" },
 ];
@@ -93,6 +95,14 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
     icon: "Crosshair",
     description: "urlscan.io skanerlari va bir serverdagi qo'shni domenlar",
     appliesTo: ["domain"],
+  },
+  {
+    id: "company-signals",
+    title: "Firibgarlik signallari",
+    icon: "ShieldQuestion",
+    description:
+      "Domen yoshi, WHOIS maxfiyligi, hosting/proxy belgilari va reestr havolasi — firibgarlik xavfini baholash",
+    appliesTo: ["company", "domain"],
   },
   {
     id: "ip-intel",
@@ -364,7 +374,7 @@ export interface ScanEvent {
 
 const q = (s: string) => `"${s}"`;
 
-const ALL: TargetType[] = ["username", "email", "phone", "name", "domain", "ip"];
+const ALL: TargetType[] = ["username", "email", "phone", "name", "domain", "ip", "company"];
 
 export const OSINT_MODULES: OsintModuleDef[] = [
   {
@@ -474,6 +484,101 @@ export const OSINT_MODULES: OsintModuleDef[] = [
     ],
     num: 6,
     recency_days: 365,
+  },
+  {
+    id: "company-registry",
+    title: "Reestr va ta'sischilar",
+    icon: "Landmark",
+    description:
+      "Davlat reestrlari: ro'yxatdan o'tgan nomi, ro'yxatga olingan sana, rahbar, ta'sischilar, STIR/rekvizitlar (orginfo.uz, opencorporates, gov.uz)",
+    appliesTo: ["company"],
+    queries: (t) => [
+      `site:orginfo.uz ${q(t)}`,
+      `${q(t)} (rahbar OR ta'sischi OR asoschisi OR direksiya OR ustav) (reestr OR ro'yxat OR korxona OR tashkilot)`,
+      `${q(t)} (STIR OR INN OR rekvizit OR "ro'yxatga olish sanasi")`,
+    ],
+    deepQueries: (t) => [
+      `site:opencorporates.com ${q(t)}`,
+      `${q(t)} (bosh direktor OR rais OR egasi OR mulkdori OR ta'sischilari)`,
+      `(site:openbudget.uz OR site:gov.uz OR site:lex.uz OR site:stat.uz) ${q(t)}`,
+    ],
+    num: 6,
+  },
+  {
+    id: "company-risk",
+    title: "Sud, tender va sharhlar",
+    icon: "Scale",
+    description:
+      "Sud qarorlari va da'volar, tender/xarid ishtiroki, mijoz sharhlari va shikoyatlari — kompaniya ishonchliligini baholash",
+    appliesTo: ["company"],
+    queries: (t) => [
+      `${q(t)} (sud OR da'vo OR arbitraj OR javobgarlik OR nizolar)`,
+      `${q(t)} (tender OR tanlov OR shartnoma OR xarid OR g'olib)`,
+      `${q(t)} (sharh OR izoh OR review OR shikoyat OR murojaat OR fikr)`,
+    ],
+    deepQueries: (t) => [
+      `${q(t)} (site:tender.mf.uz OR site:xarid.uzex.uz OR site:yutuq.uzex.uz OR site:konkur.uz OR site:dxarid.uzex.uz)`,
+      `${q(t)} (site:trustpilot.com OR site:otzovik.com OR site:irecommend.ru OR site:olx.uz)`,
+      `${q(t)} (qarzdorlik OR bankrot OR likvidatsiya OR reorganizatsiya OR inspeksiya)`,
+    ],
+    num: 6,
+  },
+  {
+    id: "company-social",
+    title: "Rasmiy sahifalar",
+    icon: "Building2",
+    description:
+      "Kompaniyaning ijtimoiy tarmoqdagi rasmiy sahifalari (Instagram, Facebook, Telegram, LinkedIn, YouTube) va ularning haqiqiyligi belgilari",
+    appliesTo: ["company"],
+    queries: (t) => [
+      `${q(t)} (site:instagram.com OR site:facebook.com OR site:t.me)`,
+      `${q(t)} (site:linkedin.com OR site:youtube.com OR site:tiktok.com)`,
+    ],
+    deepQueries: (t) => [
+      `(site:linkedin.com/company OR site:linkedin.com/in) ${q(t)}`,
+      `${q(t)} ("rasmiy sahifa" OR "official page" OR "rasmiy kanal" OR obunachi OR followers)`,
+      `${q(t)} (soxta OR fake OR "rasmiy emas") (sahifa OR kanal OR profil)`,
+    ],
+    num: 6,
+  },
+  {
+    id: "company-fraud",
+    title: "Firibgarlik eslatmalari",
+    icon: "ShieldAlert",
+    description:
+      "Scam bazalari, ishonchsizlik sharhlari, «aldangan mijoz» eslatmalari — kompaniya yoki sayt haqidagi ogohlantirishlar",
+    appliesTo: ["company"],
+    queries: (t) => [
+      `${q(t)} (firibgarlik OR scam OR aldash OR soxta OR ishonchsiz)`,
+      `site:scamadviser.com ${q(t)}`,
+    ],
+    deepQueries: (t) => [
+      `${q(t)} (pul o'tkazdim OR to'lov qilmadi OR aldangan OR bedorlik OR pulim ketdi)`,
+      `${q(t)} (site:scam-detector.com OR site:scamwatcher.com OR site:trustpilot.com OR site:webparanoid.com)`,
+    ],
+    num: 6,
+  },
+  {
+    id: "person-public",
+    title: "Ommaviy shaxs izlari",
+    icon: "UserRoundSearch",
+    description:
+      "Lavozim va karyera, rasmiy bayonotlar va intervyular, nashrlar, bog'liq tashkilotlar va loyihalar, ochiq indekslangan shaxsiy ma'lumotlar — ommaviy shaxs faoliyati to'liq rasmi",
+    appliesTo: ["name"],
+    queries: (t) => [
+      `${q(t)} (lavozim OR rahbar OR direktor OR karyera OR rezyume OR CV)`,
+      `${q(t)} (bayonot OR intervyu OR nutq OR chiqish OR press-konferensiya OR brifing)`,
+      `${q(t)} (maqola OR nashr OR publikatsiya OR kitob OR blog OR muallif)`,
+    ],
+    deepQueries: (t) => [
+      `${q(t)} (tashkilot OR fond OR uyushma OR partiya OR kompaniya OR loyiha) (rahbari OR a'zosi OR asoschisi OR ta'sischisi OR maslahatchi)`,
+      `${q(t)} ("tarjimai hol" OR biography OR "curriculum vitae")`,
+      // Foydalanuvchi so'rovi: ochiq indekslangan uy manzili, oila a'zolari,
+      // shaxsiy telefon kabilarni ham ochiq qidiruv orqali ko'rsatish
+      `${q(t)} (manzil OR "yashash joyi" OR "oila a'zolari" OR "telefon raqami" OR aloqa OR qarindoshlari)`,
+      `${q(t)} (davlat mukofoti OR unvon OR reyting OR boylik deklaratsiyasi OR daromad)`,
+    ],
+    num: 6,
   },
   {
     id: "tech",
@@ -976,6 +1081,7 @@ export const PIVOT_PRIORITY: Record<TargetType, number> = {
   username: 1,
   phone: 2,
   domain: 3,
-  ip: 4,
-  name: 5,
+  company: 4,
+  ip: 5,
+  name: 6,
 };
