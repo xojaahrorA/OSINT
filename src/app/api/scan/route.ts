@@ -17,7 +17,10 @@ import {
   type SpeedProfile,
 } from "@/lib/search-engines";
 import { DIRECT_RUNS, cleanDomain } from "@/lib/osint-sources";
-import { emailScoreSource } from "@/lib/email-score";
+import {
+  SYNTHESIS_MODULES,
+  SYNTHESIS_RUNS,
+} from "@/lib/target-score";
 import { verifyProfileLinks } from "@/lib/profile-verify";
 import { nameVariants } from "@/lib/name-variants";
 import {
@@ -190,18 +193,31 @@ export async function POST(req: NextRequest) {
       // crt.sh, Wayback, urlscan.io, Shodan InternetDB — faqat domen/IP uchun.
       // Qidiruv dvigatellari bu ma'lumotlarni indekslamaydi — shuning uchun
       // real API'larga to'g'ridan-to'g'ri ulanamiz.
+      // Sintez modullari (*-score) API manba emas — barcha modullar natijasidan
+      // keyin SINTEZ qilinadi, shuning uchun to'g'ridan-to'g'ri manbalar ro'yxatidan
+      // chetlab o'tiladi (aks holda bo'sh natijali dublikat modul chiqardi).
+      const synthesis = querySet !== "deep-only" ? SYNTHESIS_MODULES[targetType] : null;
       const directPlannedAll =
         querySet !== "deep-only"
           ? DIRECT_MODULE_META.filter(
               (m) =>
                 m.appliesTo.includes(targetType) &&
+                (!synthesis || m.id !== synthesis.id) &&
                 (!requestedModules || requestedModules.length === 0 || requestedModules.includes(m.id))
             )
           : [];
+      // Dublikatlar himoyasi: DIRECT_MODULE_META'da bir xil id ikki marta uchrashi
+      // bir xil API'ga ikki marta so'rov yuborardi (rate-limit isrofi)
+      const seenDirectIds = new Set<string>();
+      const directPlannedUnique = directPlannedAll.filter((m) => {
+        if (seenDirectIds.has(m.id)) return false;
+        seenDirectIds.add(m.id);
+        return true;
+      });
       // Premium manbalardan kaliti yo'qlari o'tkazib yuboriladi — skaner
       // to'xtamasligi kerak; foydalanuvchiga kalit qayerdan olinishi aytib beriladi.
-      const directNoKey = directPlannedAll.filter((m) => premiumKeyMissing(m.id));
-      const directPlanned = directPlannedAll.filter(
+      const directNoKey = directPlannedUnique.filter((m) => premiumKeyMissing(m.id));
+      const directPlanned = directPlannedUnique.filter(
         (m) => !premiumKeyMissing(m.id)
       );
 
@@ -216,7 +232,8 @@ export async function POST(req: NextRequest) {
         ...applicable.map((m) => m.id),
         ...(targetType === "username" && querySet !== "deep-only" ? ["profiles"] : []),
         // IntelBase uslubidagi umumiy baho — barcha modullar natijalaridan SINTEZ qilinadi
-        ...(targetType === "email" && querySet !== "deep-only" ? ["email-score"] : []),
+        // (barcha 7 maqsad turi uchun: email-score, username-score, phone-score, ...)
+        ...(synthesis ? [synthesis.id] : []),
       ];
 
       send({
@@ -567,11 +584,11 @@ export async function POST(req: NextRequest) {
           moduleTitle: "Profil havolalari",
         });
       }
-      if (targetType === "email" && querySet !== "deep-only") {
+      if (synthesis) {
         send({
           type: "module_start",
-          moduleId: "email-score",
-          moduleTitle: "Umumiy baho va Timeline",
+          moduleId: synthesis.id,
+          moduleTitle: synthesis.title,
         });
       }
 
@@ -649,35 +666,35 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // IntelBase uslubidagi "Assessment": Haqiqiyligi/Ochiqlik ballari + Timeline —
-      // barcha modullar (stealer-logs, breaches, mailbox, gravatar, github...) natijalari
-      // to'plangach sintez qilinadi. Bepul manbalar bilan, qo'shimcha kalit talab qilmaydi.
-      if (targetType === "email" && querySet !== "deep-only") {
+      // IntelBase uslubidagi "Assessment": har maqsad turi uchun umumiy ballar +
+      // asoslar + Timeline + BOG'LANISHLAR — barcha modullar natijalari to'plangach
+      // SINTEZ qilinadi. Bepul manbalar bilan, qo'shimcha kalit talab qilmaydi.
+      if (synthesis) {
         log(
           "info",
-          "[Umumiy baho] Haqiqiyligi/Ochiqlik ballari hisoblanmoqda (DNS, oqishlar, stealer loglar, profillar)..."
+          `[Umumiy baho] Ballar va bog'lanishlar hisoblanmoqda (barcha modullar natijalari sintez qilinadi)...`
         );
         let scoreItems: SearchResultItem[] = [];
         try {
           const resultsMap: Record<string, SearchResultItem[]> = {};
           for (const [k, v] of directResults) resultsMap[k] = v;
           for (const [k, v] of collector) if (!resultsMap[k]) resultsMap[k] = v;
-          scoreItems = await withTimeout(
-            emailScoreSource(query, resultsMap),
-            40_000,
-            "email-score"
-          );
+          // Profil havolalari natijalari ham sintezga kiradi (username skanlari)
+          const runner = SYNTHESIS_RUNS[synthesis.id];
+          if (runner) {
+            scoreItems = await withTimeout(runner(query, resultsMap), 40_000, synthesis.id);
+          }
           log(
             "ok",
-            `[Umumiy baho] ✓ ${scoreItems.length} ta baho kartasi — ballar va asoslari tayyor`
+            `[Umumiy baho] ✓ ${scoreItems.length} ta baho kartasi — ballar, asoslar va bog'lanishlar tayyor`
           );
         } catch (e) {
           log("warn", `[Umumiy baho] Hisoblanmadi: ${String(e).slice(0, 70)}`);
         }
         send({
           type: "module_done",
-          moduleId: "email-score",
-          moduleTitle: "Umumiy baho va Timeline",
+          moduleId: synthesis.id,
+          moduleTitle: synthesis.title,
           count: scoreItems.length,
           results: scoreItems,
         });

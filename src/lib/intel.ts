@@ -77,6 +77,12 @@ const NAME_STOPWORDS = new Set([
   "arrest", "arrested", "detained", "court", "case", "trial", "verdict",
   "warrant", "police", "prosecutor", "charge", "charges", "lawsuit",
   "founder", "asoschisi", "direktor", "bosh", "rahbar", "head", "chief",
+  // zararli dastur / kiberxavfsizlik atamalari — stealer loglarida ism emas
+  "stealer", "generic", "redline", "malware", "virus", "trojan",
+  "hudson", "rock", "cavalier", "log", "logs", "infostealer",
+  // telefon/e'lon sahifalarida ism bilan qo'shilib chiqadigan umumiy atamalar
+  "murojaat", "aloqa", "kontakt", "qo'ng'iroq", "qo'ngiroq", "ariza",
+  "mijoz", "shikoyat", "mb", "ooo", "mchj",
   "owner", "egasi", "founder's", "visit", "visits", "visited", "arrives",
   "leaves", "returns", "says", "said", "told", "speaks", "meets", "met",
   "dies", "wins", "loses", "sent", "held", "under", "amid", "after",

@@ -9,6 +9,7 @@
 
 import type { SearchResultItem } from "@/lib/osint";
 import { breachCatalogFacts, FREEMAIL_SET, isRoleLocalPart } from "@/lib/osint-sources";
+import { collectLinkedIntel, linkedCard } from "@/lib/target-score";
 
 // Vaqtinchalik pochta domenlari (eng ko'p ishlatiladiganlar — to'liq ro'yxat kalitsiz manbalarda)
 const DISPOSABLE_DOMAINS = new Set([
@@ -436,5 +437,11 @@ export async function emailScoreSource(
       )
     );
   }
+
+  // Bog'lanishlar (korelyatsiya): barcha modullar natijalaridan ajratilgan,
+  // maqsad email bilan bog'langan entitetlar — username profillar, korporativ
+  // domen, telefon va h.k. IntelBase'dagi yagona rasm tamoyili.
+  const lcCard = linkedCard(collectLinkedIntel(target, "email", moduleResults), target.trim().toLowerCase());
+  if (lcCard) out.push(lcCard);
   return out;
 }

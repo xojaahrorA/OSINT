@@ -189,6 +189,13 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   leakcheck: Vault,
   "email-score": Gauge,
   emailrep: ShieldCheck,
+  // IntelBase uslubidagi sintez baholari (barcha maqsad turlari)
+  "username-score": Fingerprint,
+  "phone-score": Contact,
+  "name-score": UserRoundSearch,
+  "domain-score": Globe2,
+  "ip-score": Antenna,
+  "company-score": Building2,
 };
 
 const EXAMPLES: { type: TargetType; query: string }[] = [

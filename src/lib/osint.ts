@@ -185,38 +185,9 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
       "O'g'irlangan yozuvlar bazasi: nechta yozuv, qanday maydonlar (parol, manzil, telefon...) va qaysi manbalardan — sanalari bilan",
     appliesTo: ["email"],
   },
-  {
-    id: "email-score",
-    title: "Umumiy baho va Timeline",
-    icon: "Gauge",
-    description:
-      "IntelBase uslubi: Haqiqiyligi va Ochiqlik ballari — har ball NIMA UCHUN shunday ekanini asoslar bilan + barcha voqealar xronologiyasi",
-    appliesTo: ["email"],
-  },
-  {
-    id: "stealer-logs",
-    title: "Infostealer loglari",
-    icon: "Bug",
-    description:
-      "Hudson Rock bazasi (100+ mln zararlangan qurilma): shu email/username parol/cookie/sessiya o'g'rilovchi virus uchragan kompyuterlarda topildimi — IntelBase uslubi",
-    appliesTo: ["email", "username"],
-  },
-  {
-    id: "leakcheck",
-    title: "LeakCheck bazasi",
-    icon: "Vault",
-    description:
-      "O'g'irlangan yozuvlar bazasi: nechta yozuv, qanday maydonlar (parol, manzil, telefon...) va qaysi manbalardan — sanalari bilan",
-    appliesTo: ["email"],
-  },
-  {
-    id: "email-score",
-    title: "Umumiy baho va Timeline",
-    icon: "Gauge",
-    description:
-      "IntelBase uslubi: Haqiqiyligi va Ochiqlik ballari — har ball NIMA UCHUN shunday ekanini asoslar bilan + barcha voqealar xronologiyasi",
-    appliesTo: ["email"],
-  },
+  // Eslatma: email-score va boshqa «*-score» sintez modullari DIRECT_MODULE_META'da
+  // bo'lmaydi — ular API manba emas, barcha modullar natijasidan SINTEZ qilinadi
+  // (scan route'da SYNTHESIS_MODULES). Meta'da bo'lsa, bo'sh natija moduli chiqardi.
   // ---- Username / Telefon / Ism: OSINT Framework bepul manbalari ----
   {
     id: "whatsmyname",

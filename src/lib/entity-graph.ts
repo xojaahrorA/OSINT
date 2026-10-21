@@ -300,6 +300,30 @@ export function buildEntityGraph(
     if (entNodeById.has(domId)) addLink(`ent:email:${e.value}`, domId, "linked");
   }
 
+  // 6b) Entitet ↔ entitet: username ↔ email lokal qismi mosligi
+  //     ("durov" username va "durov@mail.com" — kuchli bog'lanish)
+  for (const u of keptEnts) {
+    if (u.kind !== "username") continue;
+    for (const e of keptEnts) {
+      if (e.kind !== "email") continue;
+      if (e.value.split("@")[0] === u.value) {
+        addLink(`ent:username:${u.value}`, `ent:email:${e.value}`, "linked");
+        break; // bitta bog'lanish yetarli
+      }
+    }
+  }
+
+  // 6c) Entitet ↔ entitet: subdomen → asosiy domen
+  //     ("api.example.uz" grafga "example.uz" bilan bog'lanadi)
+  for (const d of keptEnts) {
+    if (d.kind !== "domain") continue;
+    const parts = d.value.split(".");
+    if (parts.length < 3) continue;
+    const parent = parts.slice(1).join(".");
+    const parentId = `ent:domain:${parent}`;
+    if (entNodeById.has(parentId)) addLink(`ent:domain:${d.value}`, parentId, "linked");
+  }
+
   // 7) Izolyatsiya qilgan entitetlarni (bog'lanishsiz) olib tashlaymiz
   const linkedIds = new Set<string>();
   for (const l of links) {
