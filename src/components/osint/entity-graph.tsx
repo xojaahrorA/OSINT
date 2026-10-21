@@ -7,6 +7,23 @@
 // Imkoniyatlar: sudrash, zoom, pan, tugunni tortish, tanlab
 // ta'kidlash, tur bo'yicha filtrlash va entitet bo'yicha to'g'ridan-to'g'ri
 // qidiruv ishga tushirish («+» pivot kabi).
+//
+// ANIQLIK (v8) — isma to'qnashuvini boshqarish tizimi:
+//   * Har tugun ismasi o'z ustuvorligi bilan tekshiriladi (tanlangan >
+//     sichqoncha ostidagi > maqsad > entitet (vazn bo'yicha) > sahifa).
+//   * Boshqa isma yoki tugun doirasi bilan kesishsa — isma YASHIRILADI,
+//     grafdagi nomlar hech qachon ustma-ust tushmaydi.
+//   * Ishmalar zoom darajasidan QAT'IY NAZAR ekran o'lchamida turadi
+//     (counter-scale) va halo (kontur) bilan chiziqlar ustida ham o'qiladi.
+//   * Itarish kuchi va masofalar kengaytirilgan — tugunlar jipslashmaydi.
+//
+// SILLIQLIK (v8):
+//   * fitView / zoom tugmalari endi lerp animatsiya bilan silliq yuradi.
+//   * Hover qilinganda qo'shni tugunlar va bog'lanishlar darhol yonadi.
+//   * Yangi tugunlar yumshoq kirish animatsiyasi bilan paydo bo'ladi.
+//   * Bog'lanishlar yengil egri chiziqlar — kesishishlar o'qiladigan.
+//   * Tugunlar radial gradient + maqsad atrofida glow, fon nuqtali to'r.
+//
 // Ma'lumot modeli: src/lib/entity-graph.ts
 
 import {
@@ -95,10 +112,57 @@ interface P {
   fy?: number;
 }
 
-const REPULSION = 2600;
-const REST = { found: 170, mentions: 115, linked: 150 } as const;
+const REPULSION = 3200; // v8: 2600 → 3200 — tugunlar jipslashmaydi
+const REPEL_CUT2 = 115600; // 340px² gacha itarish sezilarli (avval 300px)
+const REST = { found: 185, mentions: 128, linked: 150 } as const;
 const STRENGTH = { found: 0.045, mentions: 0.06, linked: 0.03 } as const;
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
+
+/** Rangni ochish/qoraylash (amt: -1..1) — gradient uchun */
+function shade(hex: string, amt: number) {
+  const num = parseInt(hex.replace("#", ""), 16);
+  let r = (num >> 16) & 255;
+  let g = (num >> 8) & 255;
+  let b = num & 255;
+  const t = amt < 0 ? 0 : 255;
+  const p = Math.abs(amt);
+  r = Math.round((t - r) * p + r);
+  g = Math.round((t - g) * p + g);
+  b = Math.round((t - b) * p + b);
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
+}
+
+/** Ikkala nuqta orasida yengil egri chiziq (quadratic) */
+function curvePath(sx: number, sy: number, tx: number, ty: number) {
+  const dx = tx - sx;
+  const dy = ty - sy;
+  const d = Math.hypot(dx, dy) || 1;
+  const off = Math.min(d * 0.1, 26);
+  const cx = (sx + tx) / 2 - (dy / d) * off;
+  const cy = (sy + ty) / 2 + (dx / d) * off;
+  return `M ${sx.toFixed(2)} ${sy.toFixed(2)} Q ${cx.toFixed(2)} ${cy.toFixed(2)} ${tx.toFixed(2)} ${ty.toFixed(2)}`;
+}
+
+/** Komponent darajasida isma uzunligi — grafdagi nomlar ixcham turadi */
+const truncLabel = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const boxesOverlap = (a: Box, b: Box) =>
+  a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+/** Isma MARKAZI doira ichiga kirdimi — burchak tegishi ruxsat etiladi
+ *  (halo bilan o'qiladigan; qattiq tekshiruv ismalarni ortiqcha yashirardi) */
+function boxHitsCircle(b: Box, cx: number, cy: number, r: number) {
+  const dx = b.x + b.w / 2 - cx;
+  const dy = b.y + b.h / 2 - cy;
+  return dx * dx + dy * dy <= r * r;
+}
 
 /** Bitta fizika qadami — itarish, prujina, gravitatsiya va integratsiya */
 function stepSim(
@@ -122,7 +186,7 @@ function stepSim(
         dy = Math.random() - 0.5;
         d2 = dx * dx + dy * dy + 0.01;
       }
-      if (d2 > 90000) continue; // 300px dan uzoq — kuch sezilarli emas
+      if (d2 > REPEL_CUT2) continue; // uzoq — kuch sezilarli emas
       const f = (REPULSION * alpha) / d2;
       const fx = dx * f;
       const fy = dy * f;
@@ -180,6 +244,23 @@ function stepSim(
   }
 }
 
+const GRAPH_CSS = `
+.eg-edge { transition: stroke-opacity .25s ease, stroke-width .25s ease; }
+.eg-node-g { transition: opacity .25s ease; }
+.eg-node-in {
+  animation: eg-node-in .38s cubic-bezier(.22,1,.36,1) both;
+  transform-box: fill-box; transform-origin: center;
+}
+@keyframes eg-node-in { from { opacity: 0; transform: scale(.35); } to { opacity: 1; transform: scale(1); } }
+.eg-hoverable { transition: transform .18s ease; transform-box: fill-box; transform-origin: center; }
+.eg-node-g:hover .eg-hoverable { transform: scale(1.12); }
+.eg-sel-ring { animation: eg-ring 1.7s ease-in-out infinite; }
+@keyframes eg-ring { 0%, 100% { opacity: .85; } 50% { opacity: .3; } }
+.eg-panel-in { animation: eg-panel .28s cubic-bezier(.22,1,.36,1) both; }
+@keyframes eg-panel { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.eg-label { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+`;
+
 export function EntityGraph({
   target,
   modules,
@@ -218,18 +299,21 @@ export function EntityGraph({
   const alphaRef = useRef(0);
   const rafRef = useRef(0);
   const dataRef = useRef(visible);
+
   useEffect(() => {
     dataRef.current = visible;
   }, [visible]);
 
   // SVG element ref'lari — rAF loop ularni imperativ yangilaydi
   const nodeElsRef = useRef(new Map<string, SVGGElement>());
-  const linkElsRef = useRef(new Map<string, SVGLineElement>());
+  const linkElsRef = useRef(new Map<string, SVGPathElement>());
+  const labelElsRef = useRef(new Map<string, SVGTextElement>());
   const viewportRef = useRef<SVGGElement | null>(null);
 
   // Ko'rinish (pan/zoom) — faqat ref; DOM'ga setAttribute orqali qo'llanadi
   // (re-render'siz — zoom va pan silliq 60fps)
   const viewRef = useRef({ x: 0, y: 0, k: 1 });
+  const animRef = useRef(0); // view lerp animatsiyasi
   const sizeRef = useRef({ w: 800, h: 480 });
   // Zoom 1.35'dan oshsa sahifa yorliqlari ko'rinadi — chegara kesilgandagina re-render
   const labelZoomRef = useRef(false);
@@ -242,7 +326,9 @@ export function EntityGraph({
       "transform",
       `translate(${w / 2 + v.x} ${h / 2 + v.y}) scale(${v.k})`
     );
-    const shouldLabels = v.k > 1.35;
+    // v8: esik 1.35 → 1.0 — ismalar zoom'dan qat'iy nazar ekran o'lchamida
+    // o'qiladigan bo'lgani uchun sahifa nomlari ham iliqroq yoqiladi
+    const shouldLabels = v.k > 1.0;
     if (shouldLabels !== labelZoomRef.current) {
       labelZoomRef.current = shouldLabels;
       setLabelZoom(shouldLabels);
@@ -262,10 +348,7 @@ export function EntityGraph({
       const s = pos.get(l.source);
       const t = pos.get(l.target);
       if (!s || !t) continue;
-      el.setAttribute("x1", s.x.toFixed(2));
-      el.setAttribute("y1", s.y.toFixed(2));
-      el.setAttribute("x2", t.x.toFixed(2));
-      el.setAttribute("y2", t.y.toFixed(2));
+      el.setAttribute("d", curvePath(s.x, s.y, t.x, t.y));
     }
   }, []);
 
@@ -280,11 +363,128 @@ export function EntityGraph({
   const panRef = useRef<{ sx: number; sy: number; vx: number; vy: number; moved: boolean } | null>(null);
   const userMovedRef = useRef(false);
 
+  // Tanlash/hover ref'lari — isma to'qnashuvi rAF ichida state'siz o'qiydi
+  const selectedRef = useRef<string | null>(null);
+  const hoverRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+  useEffect(() => {
+    hoverRef.current = hover;
+  }, [hover]);
+
   const nodeR = useCallback((n: GraphNode) => {
     if (n.kind === "target") return 22;
     if (n.kind === "result") return 7 + Math.min(n.weight, 5);
     return 12 + Math.min(n.weight, 8) * 0.9;
   }, []);
+
+  /**
+   * ISMA TO'QNASUVINI BOSHQARISH (v8 asosiy yutuq).
+   * Har isma uchun ekran o'lchamidagi quti hisoblanadi (zoom counter-scale
+   * bilan) va ustuvorlik bo'yicha joylashtiriladi: tanlangan > hover >
+   * maqsad > entitet (vazn) > sahifa. Boshqa isma yoki tugun doirasi bilan
+   * kesishsa — isma yashiriladi. Nomlar hech qachon ustma-ust tushmaydi.
+   */
+  const resolveLabels = useCallback(
+    (force = false) => {
+      const pos = posRef.current;
+      const nodes = dataRef.current.nodes;
+      const k = viewRef.current.k || 1;
+      const sel = selectedRef.current;
+      const hov = hoverRef.current;
+      const focus = sel ?? hov;
+
+      // Focus faol bo'lsa — qo'shni bo'lmaganlar ismalari yashirinadi
+      let focusSet: Set<string> | null = null;
+      if (focus) {
+        focusSet = new Set([focus]);
+        for (const l of dataRef.current.links) {
+          if (l.source === focus) focusSet.add(l.target);
+          if (l.target === focus) focusSet.add(l.source);
+        }
+      }
+
+      // Tugun doiralari — isma ularning ustiga tushmasligi kerak
+      const circles: { id: string; x: number; y: number; r: number }[] = [];
+      for (const n of nodes) {
+        const p = pos.get(n.id);
+        if (!p) continue;
+        circles.push({ id: n.id, x: p.x, y: p.y, r: nodeR(n) + 2 });
+      }
+
+      interface Cand {
+        id: string;
+        el: SVGTextElement;
+        prio: number;
+        weight: number;
+        // Ikkala pozitsiya: past (standart) va yuqori (pastga sig'masa)
+        below: { off: number; box: Box };
+        above: { off: number; box: Box };
+      }
+      const cands: Cand[] = [];
+      nodes.forEach((n) => {
+        const p = pos.get(n.id);
+        const el = labelElsRef.current.get(n.id);
+        if (!p || !el) return;
+        const r = nodeR(n);
+        const fs = n.kind === "target" ? 12 : 10;
+        // Zoom'dan qat'iy nazar ekran o'lchamida: counter-scale + doira oldida 7px
+        const inv = 1 / k;
+        const off = r + 7 / k;
+        const wFactor = n.kind === "target" ? 0.7 : 0.64;
+        const w = n.label.length * fs * wFactor * inv;
+        const h = (fs + 5) * inv;
+        const below = { off, box: { x: p.x - w / 2, y: p.y + off - h * 0.72, w, h } };
+        const above = { off: -off, box: { x: p.x - w / 2, y: p.y - off - h * 0.72, w, h } };
+        const prio =
+          n.id === sel ? 0 : n.id === hov ? 1 : n.kind === "target" ? 2 : n.kind === "result" ? 4 : 3;
+        cands.push({ id: n.id, el, prio, weight: n.weight, below, above });
+      });
+
+      // Harakat davomida (alpha baland) to'qnashuvni kutamiz — isma
+      // sakrab-yonib turishi (flicker) yo'q; halo vaqtincha o'qiladigan
+      const settling = force || alphaRef.current < 0.25;
+
+      cands.sort((a, b) => a.prio - b.prio || b.weight - a.weight);
+      const taken: Box[] = [];
+      // Isma joyini hal qilish: avval past, sig'masa yuqoriga qarataladi —
+      // shunda zich klasterlarda ham ko'p ismalar ko'rinadi, hech biri ustma-ust tushmaydi
+      const place = (c: Cand, side: { off: number; box: Box }): boolean => {
+        for (const t of taken) {
+          if (boxesOverlap(side.box, t)) return false;
+        }
+        for (const cir of circles) {
+          if (cir.id === c.id) continue;
+          if (boxHitsCircle(side.box, cir.x, cir.y, cir.r)) return false;
+        }
+        c.el.setAttribute(
+          "transform",
+          `translate(0 ${side.off.toFixed(2)}) scale(${(1 / k).toFixed(3)})`
+        );
+        taken.push(side.box);
+        c.el.removeAttribute("display");
+        return true;
+      };
+      for (const c of cands) {
+        // Focus rejimi: aloqasiz tugun ismasi — yashirin
+        if (focusSet && !focusSet.has(c.id) && c.id !== sel && c.id !== hov) {
+          c.el.setAttribute("display", "none");
+          continue;
+        }
+        if (!settling) {
+          c.el.setAttribute(
+            "transform",
+            `translate(0 ${c.below.off.toFixed(2)}) scale(${(1 / k).toFixed(3)})`
+          );
+          c.el.removeAttribute("display");
+          continue;
+        }
+        if (!place(c, c.below) && !place(c, c.above)) c.el.setAttribute("display", "none");
+      }
+    },
+    [nodeR]
+  );
 
   const startRaf = useCallback(() => {
     if (rafRef.current) return;
@@ -300,6 +500,8 @@ export function EntityGraph({
           p.vx = 0;
           p.vy = 0;
         }
+        // To'xtagan holda yakuniy isma to'qnashuvini hal qilamiz
+        resolveLabels(true);
         return;
       }
       stepSim(dataRef.current.nodes, dataRef.current.links, posRef.current, Math.min(a, 1));
@@ -307,10 +509,11 @@ export function EntityGraph({
       alphaRef.current = a * 0.975;
       // Imperativ DOM yangilash — React re-render YO'Q (silliq 60fps)
       syncAll();
+      resolveLabels();
       rafRef.current = requestAnimationFrame(loop);
     };
     rafRef.current = requestAnimationFrame(loop);
-  }, [syncAll]);
+  }, [syncAll, resolveLabels]);
 
   useEffect(() => {
     startRaf();
@@ -335,15 +538,57 @@ export function EntityGraph({
     return () => ro.disconnect();
   }, [applyView]);
 
+  // Ko'rinishni silliq o'tkazish — fitView/zoom sakramasdan lerp bilan yuradi.
+  // animTargetRef: joriy animatsiya MANZILI — tez ketma-ket zoom bosishlarida
+  // har safar noldan emas, oldingi manzildan davom etiladi (kuchayib boradi).
+  const animTargetRef = useRef<{ x: number; y: number; k: number } | null>(null);
+  const animateView = useCallback(
+    (target: { x: number; y: number; k: number }, ms = 340) => {
+      if (animRef.current) cancelAnimationFrame(animRef.current);
+      animTargetRef.current = target;
+      const from = { ...viewRef.current };
+      const t0 = performance.now();
+      const tick = (now: number) => {
+        const p = clamp((now - t0) / ms, 0, 1);
+        const e = 1 - Math.pow(1 - p, 3); // easeOutCubic
+        viewRef.current = {
+          x: from.x + (target.x - from.x) * e,
+          y: from.y + (target.y - from.y) * e,
+          k: from.k + (target.k - from.k) * e,
+        };
+        applyView();
+        if (p < 1) {
+          animRef.current = requestAnimationFrame(tick);
+        } else {
+          animRef.current = 0;
+          animTargetRef.current = null;
+        }
+      };
+      animRef.current = requestAnimationFrame(tick);
+    },
+    [applyView]
+  );
+
+  // Komponent yo'q qilinganda view animatsiyasini ham to'xtatamiz
+  useEffect(
+    () => () => {
+      if (animRef.current) cancelAnimationFrame(animRef.current);
+      animRef.current = 0;
+    },
+    []
+  );
+
   const fitView = useCallback(() => {
     const { nodes } = dataRef.current;
     const pos = posRef.current;
     if (nodes.length < 2) {
-      viewRef.current = { x: 0, y: 0, k: 1 };
-      applyView();
+      animateView({ x: 0, y: 0, k: 1 }, 240);
       return;
     }
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
     for (const n of nodes) {
       const p = pos.get(n.id);
       if (!p) continue;
@@ -352,13 +597,20 @@ export function EntityGraph({
       minY = Math.min(minY, p.y);
       maxY = Math.max(maxY, p.y);
     }
-    const bw = Math.max(80, maxX - minX) + 140;
-    const bh = Math.max(80, maxY - minY) + 140;
+    const bw = Math.max(80, maxX - minX) + 150;
+    const bh = Math.max(80, maxY - minY) + 170;
     const { w, h } = sizeRef.current;
     const k = clamp(Math.min(w / bw, h / bh), 0.35, 1.6);
-    viewRef.current = { x: (-((minX + maxX) / 2)) * k, y: (-((minY + maxY) / 2)) * k, k };
-    applyView();
-  }, [applyView]);
+    animateView({ x: -((minX + maxX) / 2) * k, y: -((minY + maxY) / 2) * k, k }, 380);
+  }, [animateView]);
+
+  const cancelViewAnim = useCallback(() => {
+    if (animRef.current) {
+      cancelAnimationFrame(animRef.current);
+      animRef.current = 0;
+    }
+    animTargetRef.current = null;
+  }, []);
 
   // Yangi tugunlarni spiral bo'ylab joylashtirish, eskilarni olib tashlash.
   // useLayoutEffect — pozitsiyalar paint'dan OLDIN DOM'ga yoziladi (bir kadrlik
@@ -381,14 +633,20 @@ export function EntityGraph({
     if (added > 0) alphaRef.current = Math.max(alphaRef.current, 0.5);
     // Commit bo'lgan elementlarga pozitsiyalarni paint oldidan qo'llash
     syncAll();
+    resolveLabels(true);
     applyView();
     startRaf();
-    // Foydalanuvchi pan/zoom qilmagan bo'lsa — avtomatik joylashtirish
+    // Foydalanuvchi pan/zoom qilmagan bo'lsa — avtomatik joylashtirish.
+    // Taymer OTILGAN paytda ham qayta tekshiramiz: aks holda skan tugashi
+    // bilan rejalashtirilgan fitView foydalanuvchi zoomidan keyin ham
+    // otib, view'ni orqaga tortardi ("graf qaytib qoladi" xatosi).
     if (!userMovedRef.current && visible.nodes.length >= 4) {
-      const t = setTimeout(fitView, 350);
+      const t = setTimeout(() => {
+        if (!userMovedRef.current) fitView();
+      }, 350);
       return () => clearTimeout(t);
     }
-  }, [visible, startRaf, fitView, syncAll, applyView]);
+  }, [visible, startRaf, fitView, syncAll, resolveLabels, applyView]);
 
   const scatter = useCallback(() => {
     const pos = posRef.current;
@@ -401,9 +659,10 @@ export function EntityGraph({
     setPinnedIds(new Set());
     alphaRef.current = 1;
     syncAll();
+    resolveLabels(true);
     startRaf();
     setTimeout(fitView, 500);
-  }, [visible, startRaf, fitView, syncAll]);
+  }, [visible, startRaf, fitView, syncAll, resolveLabels]);
 
   // Maltego "Circular Layout": maqsad markazda, entitetlar ichki doirada,
   // sahifalar tashqi doirada. Maltego'da avtomatik joylashuvlar BIR MARTALIK —
@@ -424,8 +683,9 @@ export function EntityGraph({
     if (target) pos.set(target.id, { x: 0, y: 0, vx: 0, vy: 0, fx: 0, fy: 0 });
     const entities = nodes.filter((n) => n.kind !== "target" && n.kind !== "result");
     const results = nodes.filter((n) => n.kind === "result");
-    place(entities, 150 + Math.min(entities.length, 14) * 7);
-    place(results, 310 + Math.min(results.length, 18) * 9);
+    // v8: radiuslar kengaytirilgan — ismalar doira bo'ylab sig'inadi
+    place(entities, 170 + Math.min(entities.length, 14) * 9);
+    place(results, 340 + Math.min(results.length, 18) * 10);
     setPinnedIds(new Set(nodes.map((n) => n.id)));
     userMovedRef.current = false;
     // Fizikani to'xtatamiz — deterministik layout joyida qoladi
@@ -435,8 +695,10 @@ export function EntityGraph({
       rafRef.current = 0;
     }
     syncAll();
+    // Doira layoutida ham ismalar ustma-ust tushmasin
+    resolveLabels(true);
     fitView();
-  }, [fitView, syncAll]);
+  }, [fitView, syncAll, resolveLabels]);
 
   // Bir tugunning qotqichini bo'shatish — yana fizika bo'yicha harakatlanadi
   const unpinNode = useCallback(
@@ -457,7 +719,7 @@ export function EntityGraph({
     [startRaf]
   );
 
-  // Maltego "Unpin All" — barcha qotqichlar bo'shaydi, organik joylashuv davom etadi
+  // Maltego "Unpin All" — barcha qotqichlar bo'shaydi, organik harakat qaytadi
   const unpinAll = useCallback(() => {
     let any = false;
     for (const [id, p] of posRef.current) {
@@ -480,6 +742,7 @@ export function EntityGraph({
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      cancelViewAnim();
       const rect = el.getBoundingClientRect();
       const mx = e.clientX - rect.left - rect.width / 2;
       const my = e.clientY - rect.top - rect.height / 2;
@@ -492,7 +755,7 @@ export function EntityGraph({
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [applyView]);
+  }, [applyView, cancelViewAnim]);
 
   const toGraph = useCallback((clientX: number, clientY: number) => {
     const rect = svgRef.current?.getBoundingClientRect();
@@ -505,7 +768,13 @@ export function EntityGraph({
   }, []);
 
   const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
+    // Pointer down va capture orasida pointer bo'shatilsa (noyob poyga)
+    // InvalidPointerId tashlanadi — butun handler o'lmasligi uchun himoyalangan
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* capture muhim emas — drag/pan window darajasida ham ishlaydi */
+    }
     const nodeEl = (e.target as Element).closest?.("[data-node-id]");
     if (nodeEl) {
       const id = nodeEl.getAttribute("data-node-id") ?? "";
@@ -516,6 +785,7 @@ export function EntityGraph({
       alphaRef.current = Math.max(alphaRef.current, 0.3);
       startRaf();
     } else {
+      cancelViewAnim();
       const v = viewRef.current;
       panRef.current = { sx: e.clientX, sy: e.clientY, vx: v.x, vy: v.y, moved: false };
     }
@@ -575,16 +845,17 @@ export function EntityGraph({
     panRef.current = null;
   };
 
-  // Qo'shni tugunlar — tanlanganda ta'kidlash
+  // Qo'shni tugunlar — tanlanganda ham, hover qilinganda ham yonadi (v8)
+  const focusId = selected ?? hover;
   const neighbors = useMemo(() => {
-    if (!selected) return null;
-    const set = new Set([selected]);
+    if (!focusId) return null;
+    const set = new Set([focusId]);
     for (const l of visible.links) {
-      if (l.source === selected) set.add(l.target);
-      if (l.target === selected) set.add(l.source);
+      if (l.source === focusId) set.add(l.target);
+      if (l.target === focusId) set.add(l.source);
     }
     return set;
-  }, [selected, visible]);
+  }, [focusId, visible]);
 
   const nodeById = useMemo(() => new Map(visible.nodes.map((n) => [n.id, n])), [visible]);
   const kindCounts = useMemo(() => {
@@ -593,6 +864,13 @@ export function EntityGraph({
     return m;
   }, [visible]);
   const selectedNode = selected ? nodeById.get(selected) ?? null : null;
+
+  // Hover/selection o'zgarganda fizika turg'un bo'lsa ham ismalarni
+  // darhol qayta hal qilamiz (loop ishlamayotgan bo'lishi mumkin)
+  useEffect(() => {
+    syncAll();
+    resolveLabels(true);
+  }, [hover, selected, labelZoom, syncAll, resolveLabels]);
 
   const toggleKind = (k: GraphNodeKind) => {
     setHiddenKinds((prev) => {
@@ -604,11 +882,12 @@ export function EntityGraph({
   };
 
   const zoomBy = (factor: number) => {
-    const v = viewRef.current;
-    const k2 = clamp(v.k * factor, 0.35, 3.2);
+    // Joriy animatsiya manzilidan davom etamiz — tez bosishlar to'planadi
+    const base = animTargetRef.current ?? viewRef.current;
+    const k2 = clamp(base.k * factor, 0.35, 3.2);
+    const s = k2 / base.k;
     userMovedRef.current = true;
-    viewRef.current = { x: v.x * (k2 / v.k), y: v.y * (k2 / v.k), k: k2 };
-    applyView();
+    animateView({ x: base.x * s, y: base.y * s, k: k2 }, 200);
   };
 
   const searchKey =
@@ -666,7 +945,14 @@ export function EntityGraph({
       </div>
 
       {/* Graf maydoni */}
-      <div ref={containerRef} className="relative h-[440px] md:h-[560px]">
+      <div
+        ref={containerRef}
+        className="relative h-[440px] md:h-[560px]"
+        style={{
+          background:
+            "radial-gradient(ellipse at 50% 40%, rgba(56,189,248,0.055), transparent 68%)",
+        }}
+      >
         {visible.nodes.length <= 1 ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-6">
             <NetworkIcon className="w-7 h-7 text-muted-foreground/50" />
@@ -701,14 +987,37 @@ export function EntityGraph({
                 setHover(null);
               }}
             >
+              <style>{GRAPH_CSS}</style>
+              <defs>
+                {/* Har tur uchun radial gradient — tugunlar hajmli ko'rinadi */}
+                {(Object.keys(KIND_COLOR) as GraphNodeKind[]).map((k) => (
+                  <radialGradient key={k} id={`eg-${k}`} cx="35%" cy="30%" r="78%">
+                    <stop offset="0%" stopColor={shade(KIND_COLOR[k], 0.38)} />
+                    <stop offset="55%" stopColor={KIND_COLOR[k]} />
+                    <stop offset="100%" stopColor={shade(KIND_COLOR[k], -0.32)} />
+                  </radialGradient>
+                ))}
+                {/* Maqsad atrofidagi yumshoq glow */}
+                <filter id="eg-glow" x="-90%" y="-90%" width="280%" height="280%">
+                  <feGaussianBlur stdDeviation="3.4" result="b" />
+                  <feMerge>
+                    <feMergeNode in="b" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+                {/* Nuqtali to'r — pan/zoom bilan yashaydi, kanvas his qilinadi */}
+                <pattern id="eg-dots" width="26" height="26" patternUnits="userSpaceOnUse">
+                  <circle cx="1.3" cy="1.3" r="1.3" fill="rgba(148,163,184,0.10)" />
+                </pattern>
+              </defs>
               <g ref={viewportRef}>
-                {/* Fon — pan uchun tutash maydon */}
-                <rect x={-5000} y={-5000} width={10000} height={10000} fill="transparent" />
-                {/* Bog'lanishlar — pozitsiyalar imperativ (syncAll), React faqat strukturani boshqaradi */}
+                {/* Fon — pan uchun tutash maydon + nuqtali to'r */}
+                <rect x={-5000} y={-5000} width={10000} height={10000} fill="url(#eg-dots)" />
+                {/* Bog'lanishlar — egri chiziqlar, pozitsiyalar imperativ (syncAll) */}
                 {visible.links.map((l) => {
                   const lKey = `${l.source}|${l.target}|${l.kind}`;
                   const hi = neighbors ? neighbors.has(l.source) && neighbors.has(l.target) : false;
-                  const dim = neighbors ? 0.08 : 1;
+                  const dim = neighbors ? (hi ? 1 : 0.07) : 1;
                   const stroke =
                     l.kind === "mentions"
                       ? KIND_COLOR[nodeById.get(l.target)?.kind ?? "result"]
@@ -716,15 +1025,17 @@ export function EntityGraph({
                         ? "#94a3b8"
                         : "#3f4f63";
                   return (
-                    <line
+                    <path
                       key={lKey}
                       ref={(el) => {
                         if (el) linkElsRef.current.set(lKey, el);
                         else linkElsRef.current.delete(lKey);
                       }}
+                      className="eg-edge"
+                      fill="none"
                       stroke={stroke}
-                      strokeWidth={hi ? 1.6 : 1}
-                      strokeOpacity={hi ? 0.9 : l.kind === "found" ? 0.3 * dim : 0.38 * dim}
+                      strokeWidth={hi ? 1.9 : l.kind === "linked" ? 1.2 : 1.05}
+                      strokeOpacity={hi ? 0.95 : (l.kind === "found" ? 0.3 : 0.38) * dim}
                       strokeDasharray={l.kind === "linked" ? "5 4" : undefined}
                     />
                   );
@@ -737,6 +1048,8 @@ export function EntityGraph({
                   const dim = neighbors ? (isHi ? 1 : 0.16) : 1;
                   const Icon = n.kind !== "result" ? KIND_ICON[n.kind] : null;
                   const showLabel = n.kind !== "result" || hover === n.id || selected === n.id || labelZoom;
+                  const labelMax = n.kind === "target" ? 34 : n.kind === "result" ? 34 : 26;
+                  const labelText = truncLabel(n.label, labelMax);
                   return (
                     <g
                       key={n.id}
@@ -746,7 +1059,7 @@ export function EntityGraph({
                       }}
                       data-node-id={n.id}
                       opacity={dim}
-                      className="cursor-pointer"
+                      className="eg-node-g cursor-pointer"
                       onPointerEnter={() => setHover(n.id)}
                       onPointerLeave={() => setHover((h) => (h === n.id ? null : h))}
                       onDoubleClick={() => unpinNode(n.id)}
@@ -756,45 +1069,77 @@ export function EntityGraph({
                         {pinnedIds.has(n.id) ? " (qadalgan — bo'shatish uchun ikki marta bosing)" : ""}
                       </title>
                       {selected === n.id && (
-                        <circle r={r + 4.5} fill="none" stroke={color} strokeWidth={1.6} opacity={0.8} />
-                      )}
-                      {pinnedIds.has(n.id) && (
                         <circle
-                          cx={r * 0.72}
-                          cy={-r * 0.72}
-                          r={3.2}
-                          fill="#f59e0b"
-                          stroke="rgba(0,0,0,0.5)"
-                          strokeWidth={1}
-                          className="pointer-events-none"
+                          r={r + 5}
+                          fill="none"
+                          stroke={color}
+                          strokeWidth={1.6}
+                          className="eg-sel-ring pointer-events-none"
                         />
                       )}
-                      <circle
-                        r={r}
-                        fill={color}
-                        stroke="rgba(255,255,255,0.18)"
-                        strokeWidth={1}
-                      />
-                      {Icon && (
-                        <Icon
-                          x={-r * 0.52}
-                          y={-r * 0.52}
-                          width={r * 1.04}
-                          height={r * 1.04}
-                          color="#0a1510"
-                          strokeWidth={2.2}
-                        />
-                      )}
+                      <g className="eg-node-in">
+                        <g className="eg-hoverable">
+                          {/* Maqsad — glow halosi bilan ajralib turadi */}
+                          {n.kind === "target" && (
+                            <circle
+                              r={r + 6}
+                              fill="none"
+                              stroke={color}
+                              strokeOpacity={0.4}
+                              strokeWidth={1.4}
+                              filter="url(#eg-glow)"
+                              className="pointer-events-none"
+                            />
+                          )}
+                          <circle
+                            r={r}
+                            fill={`url(#eg-${n.kind})`}
+                            stroke={color}
+                            strokeOpacity={0.45}
+                            strokeWidth={1.1}
+                          />
+                          {pinnedIds.has(n.id) && (
+                            <circle
+                              cx={r * 0.72}
+                              cy={-r * 0.72}
+                              r={3.2}
+                              fill="#f59e0b"
+                              stroke="rgba(0,0,0,0.5)"
+                              strokeWidth={1}
+                              className="pointer-events-none"
+                            />
+                          )}
+                          {Icon && (
+                            <Icon
+                              x={-r * 0.52}
+                              y={-r * 0.52}
+                              width={r * 1.04}
+                              height={r * 1.04}
+                              color="#0a1220"
+                              strokeWidth={2.2}
+                            />
+                          )}
+                        </g>
+                      </g>
                       {showLabel && (
                         <text
-                          y={r + 12}
+                          ref={(el) => {
+                            if (el) labelElsRef.current.set(n.id, el);
+                            else labelElsRef.current.delete(n.id);
+                          }}
+                          className="eg-label pointer-events-none"
                           textAnchor="middle"
                           fontSize={n.kind === "target" ? 12 : 10}
-                          fontWeight={n.kind === "target" ? 600 : 400}
-                          fill={n.kind === "result" ? "#94a3b8" : "#e2e8f0"}
-                          className="pointer-events-none"
+                          fontWeight={n.kind === "target" ? 600 : 500}
+                          fill={n.kind === "result" ? "#a8b6c8" : "#e6edf5"}
+                          // Halo: isma chiziqlar/tugunlar ustidan o'tsa ham o'qiladi
+                          stroke="#080d16"
+                          strokeWidth={3}
+                          strokeOpacity={0.85}
+                          paintOrder="stroke"
+                          strokeLinejoin="round"
                         >
-                          {n.label}
+                          {labelText}
                         </text>
                       )}
                     </g>
@@ -805,16 +1150,16 @@ export function EntityGraph({
 
             {/* Boshqaruv tugmalari */}
             <div className="absolute right-2 top-2 flex flex-col gap-1">
-              <Button variant="secondary" size="icon" className="h-7 w-7" title="Kattalashtirish" onClick={() => zoomBy(1.25)}>
+              <Button variant="secondary" size="icon" className="h-7 w-7 transition-transform hover:scale-105" title="Kattalashtirish" onClick={() => zoomBy(1.25)}>
                 <Plus className="w-3.5 h-3.5" />
               </Button>
-              <Button variant="secondary" size="icon" className="h-7 w-7" title="Kichiklashtirish" onClick={() => zoomBy(0.8)}>
+              <Button variant="secondary" size="icon" className="h-7 w-7 transition-transform hover:scale-105" title="Kichiklashtirish" onClick={() => zoomBy(0.8)}>
                 <Minus className="w-3.5 h-3.5" />
               </Button>
               <Button
                 variant="secondary"
                 size="icon"
-                className="h-7 w-7"
+                className="h-7 w-7 transition-transform hover:scale-105"
                 title="Joylashtirish"
                 onClick={() => {
                   userMovedRef.current = false;
@@ -823,13 +1168,13 @@ export function EntityGraph({
               >
                 <Maximize2 className="w-3.5 h-3.5" />
               </Button>
-              <Button variant="secondary" size="icon" className="h-7 w-7" title="Qayta joylash (organik)" onClick={scatter}>
+              <Button variant="secondary" size="icon" className="h-7 w-7 transition-transform hover:scale-105" title="Qayta joylash (organik)" onClick={scatter}>
                 <RefreshCcw className="w-3.5 h-3.5" />
               </Button>
               <Button
                 variant="secondary"
                 size="icon"
-                className="h-7 w-7"
+                className="h-7 w-7 transition-transform hover:scale-105"
                 title="Doira bo'ylab joylash (Maltego circular layout)"
                 onClick={circleLayout}
               >
@@ -838,7 +1183,7 @@ export function EntityGraph({
               <Button
                 variant="secondary"
                 size="icon"
-                className="h-7 w-7"
+                className="h-7 w-7 transition-transform hover:scale-105"
                 title="Barcha qadalganlarni bo'shatish — organik harakat qaytadi"
                 disabled={pinnedIds.size === 0}
                 onClick={unpinAll}
@@ -847,9 +1192,18 @@ export function EntityGraph({
               </Button>
             </div>
 
+            {/* Ishoralar — pastki chapda, graf bilan ishlashni o'rgatadi */}
+            <div className="pointer-events-none absolute bottom-2 left-2 hidden md:block text-[10px] leading-relaxed text-muted-foreground/60">
+              Tortish — qadash · Ikki marta bosish — bo&apos;shatish · G&apos;ildirak — zoom ·
+              Bosish — tafsilotlar
+            </div>
+
             {/* Tanlangan tugun — tafsilotlar */}
             {selectedNode && (
-              <div className="absolute left-2 right-2 bottom-2 md:left-auto md:w-96 rounded-lg border bg-card/95 backdrop-blur p-3 shadow-lg">
+              <div
+                key={selectedNode.id}
+                className="eg-panel-in absolute left-2 right-2 bottom-2 md:left-auto md:w-96 rounded-lg border bg-card/95 backdrop-blur p-3 shadow-lg"
+              >
                 <div className="flex items-center gap-2">
                   <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: KIND_COLOR[selectedNode.kind] }} />
                   <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -860,9 +1214,14 @@ export function EntityGraph({
                       ildiz
                     </Badge>
                   )}
+                  {neighbors && (
+                    <Badge variant="secondary" className="text-[9px] font-normal bg-secondary/50 border border-transparent tabular-nums">
+                      {Math.max(0, neighbors.size - 1)} bog&apos;lanish
+                    </Badge>
+                  )}
                   <button
                     type="button"
-                    className="ml-auto text-muted-foreground hover:text-foreground"
+                    className="ml-auto text-muted-foreground hover:text-foreground transition-colors"
                     onClick={() => setSelected(null)}
                   >
                     <X className="w-4 h-4" />
