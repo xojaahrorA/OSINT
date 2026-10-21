@@ -17,6 +17,7 @@ import {
   type SpeedProfile,
 } from "@/lib/search-engines";
 import { DIRECT_RUNS, cleanDomain } from "@/lib/osint-sources";
+import { emailScoreSource } from "@/lib/email-score";
 import { verifyProfileLinks } from "@/lib/profile-verify";
 import { nameVariants } from "@/lib/name-variants";
 import {
@@ -214,6 +215,8 @@ export async function POST(req: NextRequest) {
         ...directPlanned.map((m) => m.id),
         ...applicable.map((m) => m.id),
         ...(targetType === "username" && querySet !== "deep-only" ? ["profiles"] : []),
+        // IntelBase uslubidagi umumiy baho — barcha modullar natijalaridan SINTEZ qilinadi
+        ...(targetType === "email" && querySet !== "deep-only" ? ["email-score"] : []),
       ];
 
       send({
@@ -564,6 +567,13 @@ export async function POST(req: NextRequest) {
           moduleTitle: "Profil havolalari",
         });
       }
+      if (targetType === "email" && querySet !== "deep-only") {
+        send({
+          type: "module_start",
+          moduleId: "email-score",
+          moduleTitle: "Umumiy baho va Timeline",
+        });
+      }
 
       // To'g'ridan-to'g'ri manbalar va qidiruv zanjiri parallel ishlaydi.
       // XATOLARSIZ REJIM: biror oqim kutilmagan xatoga uchrasa ham qolgan
@@ -636,6 +646,40 @@ export async function POST(req: NextRequest) {
           moduleTitle: "Profil havolalari",
           count: links.length,
           results: links,
+        });
+      }
+
+      // IntelBase uslubidagi "Assessment": Haqiqiyligi/Ochiqlik ballari + Timeline —
+      // barcha modullar (stealer-logs, breaches, mailbox, gravatar, github...) natijalari
+      // to'plangach sintez qilinadi. Bepul manbalar bilan, qo'shimcha kalit talab qilmaydi.
+      if (targetType === "email" && querySet !== "deep-only") {
+        log(
+          "info",
+          "[Umumiy baho] Haqiqiyligi/Ochiqlik ballari hisoblanmoqda (DNS, oqishlar, stealer loglar, profillar)..."
+        );
+        let scoreItems: SearchResultItem[] = [];
+        try {
+          const resultsMap: Record<string, SearchResultItem[]> = {};
+          for (const [k, v] of directResults) resultsMap[k] = v;
+          for (const [k, v] of collector) if (!resultsMap[k]) resultsMap[k] = v;
+          scoreItems = await withTimeout(
+            emailScoreSource(query, resultsMap),
+            40_000,
+            "email-score"
+          );
+          log(
+            "ok",
+            `[Umumiy baho] ✓ ${scoreItems.length} ta baho kartasi — ballar va asoslari tayyor`
+          );
+        } catch (e) {
+          log("warn", `[Umumiy baho] Hisoblanmadi: ${String(e).slice(0, 70)}`);
+        }
+        send({
+          type: "module_done",
+          moduleId: "email-score",
+          moduleTitle: "Umumiy baho va Timeline",
+          count: scoreItems.length,
+          results: scoreItems,
         });
       }
 

@@ -114,6 +114,15 @@ export const PREMIUM_SOURCES: PremiumMeta[] = [
     free: "≈$3.50/oy — eng arzon pullik manba",
   },
   {
+    id: "emailrep",
+    title: "EmailRep obro'ysi",
+    envKey: "EMAILREP_API_KEY",
+    appliesTo: ["email"],
+    what: "Email obro'si (reputation), oqishlarda qatnashgani va aniqlangan profil platformalari — IntelBase'dagi Assessment turi",
+    getKeyUrl: "https://emailrep.io/update",
+    free: "Oyiga 200 qidiruv bepul",
+  },
+  {
     id: "hunter",
     title: "Hunter.io",
     envKey: "HUNTER_API_KEY",
@@ -404,6 +413,72 @@ export async function hibpSource(target: string): Promise<SearchResultItem[]> {
       "haveibeenpwned.com"
     )
   );
+}
+
+// ===== EmailRep — email obro'si va aniqlangan profillar (kalitli) =====
+
+interface EmailRepResp {
+  reputation?: string;
+  suspicious?: boolean;
+  references?: number;
+  details?: {
+    credentials_leaked?: boolean;
+    data_breach?: boolean;
+    first_seen?: string;
+    last_seen?: string;
+    domain_exists?: boolean;
+    domain_reputation?: string;
+    profiles?: string[];
+  };
+}
+
+export async function emailRepSource(target: string): Promise<SearchResultItem[]> {
+  if (!premiumKeySet("emailrep")) return [];
+  const email = target.trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return [];
+  const key = keyOf("EMAILREP_API_KEY")!;
+  const r = await safe(
+    jsonFetch<EmailRepResp>(
+      `https://emailrep.io/${encodeURIComponent(email)}?key=${encodeURIComponent(key)}`,
+      { timeoutMs: 12_000 }
+    )
+  );
+  if (!r || !r.reputation) return [];
+  const repUz: Record<string, string> = {
+    high: "yuqori ishonch",
+    medium: "o'rtacha",
+    low: "past ishonch (shubhali)",
+    nographic: "tarix yo'q (juda yangi yoki ishlatilmagan)",
+  };
+  const d = r.details ?? {};
+  const facts = [
+    `Obro': ${repUz[r.reputation] ?? r.reputation}`,
+    r.suspicious ? "SHUBHALI manzil belgisi" : "Shubhali emas",
+    d.credentials_leaked || d.data_breach ? "Oqishlarda qatnashgan" : "",
+    d.first_seen ? `Birinchi ko'rilgan: ${d.first_seen}` : "",
+    r.references !== undefined ? `${r.references} ta manbaga havola` : "",
+    d.domain_reputation ? `Domen obro'si: ${d.domain_reputation}` : "",
+  ].filter(Boolean);
+  const out: SearchResultItem[] = [
+    mk(
+      `EmailRep: ${repUz[r.reputation] ?? r.reputation}`,
+      `https://emailrep.io/${encodeURIComponent(email)}`,
+      facts.join(" | "),
+      "emailrep.io"
+    ),
+  ];
+  const profiles = (d.profiles ?? []).filter(Boolean);
+  if (profiles.length > 0) {
+    out.push(
+      mk(
+        `EmailRep: ${profiles.length} platformada profil aniqlandi`,
+        `https://emailrep.io/${encodeURIComponent(email)}`,
+        `Shu email qaysi platformalarda ko'rilgan: ${profiles.join(", ")}`,
+        "emailrep.io"
+      )
+    );
+  }
+  return out;
 }
 
 // kichik yordamchi (nom to'qnashuvining oldini olish uchun alohida)
@@ -721,6 +796,7 @@ export const PREMIUM_RUNS: Record<
   "google-cse": googleCseSource,
   tavily: tavilySource,
   hibp: hibpSource,
+  emailrep: emailRepSource,
   hunter: hunterSource,
   shodan: shodanSource,
   numlookup: numlookupSource,

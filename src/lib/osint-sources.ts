@@ -909,7 +909,84 @@ function mailProvider(mx: string): string {
   return "";
 }
 
-// ===== Email: ma'lumot oqishlari (XposedOrNot) =====
+// ===== Email yordamchilari — eksport (email-score.ts ishlatadi) =====
+
+export const FREEMAIL_SET = FREEMAIL_DOMAINS;
+
+/** Rol manzili lokal qismi — info@, admin@, support@... shaxsga bog'lab bo'lmaydi */
+export function isRoleLocalPart(local: string): boolean {
+  return /^(info|admin|administrator|support|contact|help|mail|sales|office|billing|hr|jobs|careers|noreply|no-reply|donotreply|postmaster|webmaster|hostmaster|abuse|security|marketing|pr|press|team|hello|service|order|shop|finance|legal|media)\d*$/.test(
+    local.toLowerCase()
+  );
+}
+
+// ===== HIBP breach katalogi (bepul, kalitsiz) — oqish nomlarini boyitish uchun =====
+// https://haveibeenpwned.com/api/v3/breaches — to'liq katalog: sana, soni, DataClasses.
+// 6 soat kesh — bir server jarayonida faqat bir marta yuklanadi.
+
+interface HibpCatalogEntry {
+  Name?: string;
+  Title?: string;
+  BreachDate?: string;
+  DataClasses?: string[];
+  PwnCount?: number;
+}
+
+interface CatalogFact {
+  title: string;
+  date: string;
+  dataClasses: string[];
+  norm: string;
+}
+
+let breachCatalogCache: { at: number; entries: HibpCatalogEntry[] } | null = null;
+
+const normBreachName = (n: string) => n.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+async function fetchBreachCatalog(): Promise<HibpCatalogEntry[]> {
+  if (breachCatalogCache && Date.now() - breachCatalogCache.at < 6 * 3600_000) {
+    return breachCatalogCache.entries;
+  }
+  const r = await fj<HibpCatalogEntry[]>("https://haveibeenpwned.com/api/v3/breaches", 12000, {
+    "User-Agent": "OSINT-Radar",
+  });
+  if (Array.isArray(r) && r.length > 0) {
+    breachCatalogCache = { at: Date.now(), entries: r };
+    return r;
+  }
+  return breachCatalogCache?.entries ?? [];
+}
+
+/** Oqish nomlari → katalog faktlari (sana + qanday maydonlar oshkor bo'lgan).
+ * Nom moslash: normalizatsiyadan keyin to'liq tenglik yoki o'zaro qamrab olish (min 5 belgi). */
+export async function breachCatalogFacts(
+  names: string[]
+): Promise<CatalogFact[]> {
+  const catalog = await fetchBreachCatalog();
+  if (catalog.length === 0) return [];
+  const out: CatalogFact[] = [];
+  for (const raw of names) {
+    const norm = normBreachName(raw);
+    if (!norm) continue;
+    const hit =
+      catalog.find((c) => normBreachName(c.Name ?? c.Title ?? "") === norm) ??
+      catalog.find((c) => {
+        const cn = normBreachName(c.Name ?? c.Title ?? "");
+        if (cn.length < 5 || norm.length < 5) return false;
+        return cn.startsWith(norm) || norm.startsWith(cn) || cn.includes(norm) || norm.includes(cn);
+      });
+    if (!hit) continue;
+    out.push({
+      title: hit.Title ?? hit.Name ?? raw,
+      date: hit.BreachDate ?? "",
+      dataClasses: (hit.DataClasses ?? []).slice(0, 5),
+      norm,
+    });
+  }
+  return out;
+}
+
+// ===== Email: ma'lumot oqishlari (XposedOrNot + HIBP katalog boyitishi) =====
 
 interface XonCheck {
   breaches?: string[][];
@@ -921,7 +998,7 @@ interface XonAnalytics {
   };
 }
 
-async function breachesSource(rawTarget: string): Promise<SearchResultItem[]> {
+export async function breachesSource(rawTarget: string): Promise<SearchResultItem[]> {
   const em = parseEmail(rawTarget);
   if (!em) return [];
   const email = `${em.local}@${em.domain}`;
@@ -956,6 +1033,64 @@ async function breachesSource(rawTarget: string): Promise<SearchResultItem[]> {
       "xposedornot.com"
     ),
   ];
+  // HIBP katalog boyitishi — har oqish uchun SANA va qanday maydonlar oshkor bo'lgani
+  // (IntelBase «Breach details: what data was exposed» uslubi, bepul manbalar bilan)
+  try {
+    const facts = await breachCatalogFacts(names);
+    if (facts.length > 0) {
+      const DC_UZ: Record<string, string> = {
+        "Email addresses": "email",
+        Passwords: "parollar",
+        "Usernames": "username",
+        Names: "ism",
+        "Phone numbers": "telefon",
+        "Physical addresses": "manzil",
+        "Dates of birth": "tug'ilgan sana",
+        "Geographic locations": "joylashuv",
+        "Social media profiles": "ijtimoiy profil",
+        "IP addresses": "IP manzil",
+        "Browser user agent details": "brauzer ma'lumotlari",
+        "Auth tokens": "tokenlar",
+        "Security questions and answers": "xavfsizlik savollari",
+        "Credit cards": "karta",
+        "Payment histories": "to'lovlar tarixi",
+        "Private messages": "shaxsiy xabarlar",
+        "Chat logs": "chat jurnali",
+        Purchases: "xaridlar",
+        Employers: "ish joyi",
+        "Job titles": "lavozim",
+      };
+      for (const f of facts.slice(0, 10)) {
+        const dc = f.dataClasses.map((d) => DC_UZ[d] ?? d.toLowerCase());
+        out.push(
+          item(
+            `${f.title} oqishi${f.date ? ` (${f.date.slice(0, 4)})` : ""}`,
+            `https://haveibeenpwned.com/PwnedWebsites#${f.title.replace(/\s+/g, "")}`,
+            [
+              f.date ? `Oqish sanasi: ${f.date}` : "",
+              dc.length ? `Oshkor bo'lganlar: ${dc.join(", ")}` : "",
+              "Batafsil: HIBP Pwned Websites katalogi",
+            ]
+              .filter(Boolean)
+              .join(" | "),
+            "haveibeenpwned.com"
+          )
+        );
+      }
+      if (facts.length > 10) {
+        out.push(
+          item(
+            `Yana ${facts.length - 10} oqish katalogdan moslandi`,
+            "https://haveibeenpwned.com/PwnedWebsites",
+            `To'liq ro'yxat: ${facts.slice(10).map((f) => f.title).join(", ")}`,
+            "haveibeenpwned.com"
+          )
+        );
+      }
+    }
+  } catch {
+    /* katalog ishlamadi — asosiy natijalar qoladi */
+  }
   const risk = ana?.BreachMetrics?.risk?.[0];
   const psRaw = ana?.BreachMetrics?.passwords_strength;
   // API ba'zan massiv ichida qaytaradi: [{"EasyToCrack":120,...}]
@@ -1049,6 +1184,169 @@ async function gravatarSource(rawTarget: string): Promise<SearchResultItem[]> {
         links[0].value!,
         links.map((u) => `${u.title || "havola"}: ${u.value}`).join(", "),
         new URL(links[0].value!).hostname
+      )
+    );
+  }
+  return out;
+}
+
+// ===== Email/Username: Infostealer loglari (Hudson Rock — bepul, kalitsiz) =====
+// IntelBase'ning «Infostealer Logs» xususiyatining bepul analogi: zararlangan
+// kompyuterlardan o'g'irlangan ma'lumotlar (parollar, cookie, sessiyalar, autofill).
+// Email va username endpointlari bir xil javob shakliga ega.
+
+interface HudStealerHit {
+  date_compromised?: string;
+  computer_name?: string;
+  operating_system?: string;
+  malware_path?: string;
+  stealer_family?: string;
+  total_corporate_services?: number;
+  total_user_services?: number;
+  antiviruses?: string[];
+  ip?: string;
+}
+
+export async function hudsonRockSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const t = rawTarget.trim();
+  const isEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(t);
+  const isUser = /^[a-zA-Z0-9._-]{2,64}$/.test(t);
+  if (!isEmail && !isUser) return [];
+  const url = isEmail
+    ? `https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-email?email=${encodeURIComponent(t)}`
+    : `https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-username?username=${encodeURIComponent(t)}`;
+  const r = await fj<{ stealers?: HudStealerHit[] }>(url, 11000);
+  if (!r) return [];
+  const hits = (r.stealers ?? []).filter(Boolean);
+  if (hits.length === 0) {
+    return [
+      item(
+        "Stealer loglarida yo'q",
+        "https://www.hudsonrock.com/free-tools",
+        `Hudson Rock infostealer bazasida shu ${isEmail ? "email" : "username"} bilan bog'langan zararlangan kompyuter topilmadi — yaxshi belgi. Bu bazada 100+ mln o'g'irlangan qurilma yozuvlari bor.`,
+        "hudsonrock.com"
+      ),
+    ];
+  }
+  const out: SearchResultItem[] = [
+    item(
+      `Stealer logda topildi: ${hits.length} zararlangan kompyuter`,
+      "https://www.hudsonrock.com/free-tools",
+      `Shu ${isEmail ? "email" : "username"} infostealer (parol/cookie/sessiya o'g'rilovchi virus) uchragan qurilmalardan topildi — bu qurilmalardagi BARCHA saqlangan parollar va sessiyalar jinoyachilar qo'lida. Eng erta: ${hits.map((h) => h.date_compromised?.slice(0, 10)).filter(Boolean).sort()[0] ?? "?"}`,
+      "hudsonrock.com"
+    ),
+  ];
+  for (const h of hits.slice(0, 3)) {
+    const corp = h.total_corporate_services ?? 0;
+    const facts = [
+      h.date_compromised ? `Zararlanish sanasi: ${h.date_compromised.slice(0, 10)}` : "",
+      h.stealer_family ? `Malumot o'g'risi: ${h.stealer_family}` : "",
+      h.operating_system ? `OS: ${h.operating_system}` : "",
+      h.computer_name ? `Kompyuter: ${h.computer_name}` : "",
+      h.malware_path ? `Zararli fayl: ${h.malware_path.slice(0, 90)}` : "",
+      h.ip ? `IP: ${h.ip}` : "",
+      `Korporativ xizmatlar: ${corp} · Foydalanuvchi xizmatlari: ${h.total_user_services ?? 0}`,
+      corp > 0 ? "DIQQAT: korporativ hisoblarga kirish ma'lumotlari ham o'g'irlangan" : "",
+    ].filter(Boolean);
+    out.push(
+      item(
+        `Zararlangan qurilma${h.stealer_family ? ` (${h.stealer_family})` : ""}`, 
+        "https://cavalier.hudsonrock.com/",
+        facts.join(" | "),
+        "hudsonrock.com"
+      )
+    );
+  }
+  return out;
+}
+
+// ===== Email: LeakCheck ommaviy baza (bepul, kalitsiz) =====
+
+interface LcPublicResp {
+  success?: boolean;
+  found?: number;
+  fields?: string[];
+  sources?: { name?: string; date?: string }[];
+}
+
+const LC_FIELD_UZ: Record<string, string> = {
+  password: "parol",
+  username: "username",
+  name: "ism",
+  first_name: "ism",
+  last_name: "familiya",
+  middle_name: "otasining ismi",
+  surnames: "familiyalar",
+  dob: "tug'ilgan sana",
+  address: "manzil",
+  address1: "manzil",
+  street: "ko'cha",
+  city: "shahar",
+  state: "viloyat",
+  region: "region",
+  province: "viloyat",
+  area: "hudud",
+  zip: "pochta indeksi",
+  country: "mamlakat",
+  phone: "telefon",
+  ip: "IP manzil",
+  ip1: "IP manzil",
+  ip2: "IP manzil",
+  ssn: "SSN (soliq/sug'urta raqami)",
+  gender: "jins",
+  company_name: "kompaniya",
+  profile_name: "profil nomi",
+  title: "unvon",
+  id: "ID",
+  origin: "chegara chiqish",
+  location: "joylashuv",
+  qqmail: "QQ mail",
+};
+
+export async function leakCheckSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const t = rawTarget.trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(t)) return [];
+  const r = await fj<LcPublicResp>(
+    `https://leakcheck.io/api/public?check=${encodeURIComponent(t)}`,
+    11000
+  );
+  if (!r || r.success !== true) return [];
+  const found = r.found ?? 0;
+  const fields = (r.fields ?? []).map((f) => LC_FIELD_UZ[f.toLowerCase()] ?? f);
+  if (found === 0) {
+    return [
+      item(
+        "LeakCheck bazasida yo'q",
+        "https://leakcheck.io/",
+        `LeakCheck o'g'irlangan yozuvlar bazasida (70+ mln email, ko'p manbalardan yig'ilgan) bu manzil uchun yozuv topilmadi.`,
+        "leakcheck.io"
+      ),
+    ];
+  }
+  const out: SearchResultItem[] = [
+    item(
+      `LeakCheck: ${found.toLocaleString("en-US")} yozuv topildi`,
+      `https://leakcheck.io/?check=${encodeURIComponent(t)}`,
+      [
+        `Oshkor bo'lgan maydonlar: ${fields.slice(0, 12).join(", ") || "aniqlanmagan"}`,
+        `Manbalar soni: ${r.sources?.length ?? 0}`,
+        fields.some((f) => f === "parol")
+          ? "DIQQAT: parollar ham oshkor bo'lgan — 2FA yoqing"
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" | "),
+      "leakcheck.io"
+    ),
+  ];
+  const srcs = (r.sources ?? []).filter((s) => s.name).slice(0, 10);
+  if (srcs.length > 0) {
+    out.push(
+      item(
+        `Oqish manbalari: ${srcs.length} ta`,
+        "https://leakcheck.io/",
+        srcs.map((s) => `${s.name}${s.date ? ` (${s.date})` : ""}`).join(", "),
+        "leakcheck.io"
       )
     );
   }
@@ -1571,6 +1869,8 @@ export const DIRECT_RUNS: Record<
   "ptr-recon": ptrReconSource,
   // Email
   breaches: breachesSource,
+  "stealer-logs": hudsonRockSource,
+  leakcheck: leakCheckSource,
   gravatar: gravatarSource,
   mailbox: mailboxSource,
   "corp-domain": corpDomainSource,
@@ -1602,9 +1902,9 @@ export function directSourceIdsFor(type: TargetType): string[] {
     : type === "ip"
       ? ["ip-intel", "whois-ip", "ptr-recon", "shodan", "ipinfo", "otx", ...PREMIUM_SEARCH_IDS]
       : type === "email"
-        ? ["breaches", "gravatar", "mailbox", "corp-domain", "github-email", "email-username", "hibp", "hunter", "reverse-whois", ...PREMIUM_SEARCH_IDS]
+        ? ["breaches", "stealer-logs", "leakcheck", "gravatar", "mailbox", "corp-domain", "github-email", "email-username", "hibp", "hunter", "reverse-whois", "email-score", ...PREMIUM_SEARCH_IDS]
         : type === "username"
-          ? ["whatsmyname", "username-probe", "telegram", "telegram-feed", "telegram-bot", ...PREMIUM_SEARCH_IDS]
+          ? ["stealer-logs", "whatsmyname", "username-probe", "telegram", "telegram-feed", "telegram-bot", ...PREMIUM_SEARCH_IDS]
           : type === "phone"
             ? ["phone-meta", "numlookup", ...PREMIUM_SEARCH_IDS]
             : type === "name"

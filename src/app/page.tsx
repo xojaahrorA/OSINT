@@ -66,6 +66,9 @@ import {
   KeyRound,
   FileBadge,
   Images,
+  Bug,
+  Vault,
+  ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -181,6 +184,11 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   "company-social": Building2,
   "company-fraud": ShieldAlert,
   "person-public": UserRoundSearch,
+  // IntelBase uslubidagi email aniqlik modullari
+  "stealer-logs": Bug,
+  leakcheck: Vault,
+  "email-score": Gauge,
+  emailrep: ShieldCheck,
 };
 
 const EXAMPLES: { type: TargetType; query: string }[] = [

@@ -169,6 +169,54 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
       "Maltego uslubi: email lokal qismi (@dan oldingi) ko'pincha username ham bo'ladi — 12 platformada JONLI tekshiriladi, faqat mavjud profillar qoladi",
     appliesTo: ["email"],
   },
+  {
+    id: "stealer-logs",
+    title: "Infostealer loglari",
+    icon: "Bug",
+    description:
+      "Hudson Rock bazasi (100+ mln zararlangan qurilma): shu email/username parol/cookie/sessiya o'g'rilovchi virus uchragan kompyuterlarda topildimi — IntelBase uslubi",
+    appliesTo: ["email", "username"],
+  },
+  {
+    id: "leakcheck",
+    title: "LeakCheck bazasi",
+    icon: "Vault",
+    description:
+      "O'g'irlangan yozuvlar bazasi: nechta yozuv, qanday maydonlar (parol, manzil, telefon...) va qaysi manbalardan — sanalari bilan",
+    appliesTo: ["email"],
+  },
+  {
+    id: "email-score",
+    title: "Umumiy baho va Timeline",
+    icon: "Gauge",
+    description:
+      "IntelBase uslubi: Haqiqiyligi va Ochiqlik ballari — har ball NIMA UCHUN shunday ekanini asoslar bilan + barcha voqealar xronologiyasi",
+    appliesTo: ["email"],
+  },
+  {
+    id: "stealer-logs",
+    title: "Infostealer loglari",
+    icon: "Bug",
+    description:
+      "Hudson Rock bazasi (100+ mln zararlangan qurilma): shu email/username parol/cookie/sessiya o'g'rilovchi virus uchragan kompyuterlarda topildimi — IntelBase uslubi",
+    appliesTo: ["email", "username"],
+  },
+  {
+    id: "leakcheck",
+    title: "LeakCheck bazasi",
+    icon: "Vault",
+    description:
+      "O'g'irlangan yozuvlar bazasi: nechta yozuv, qanday maydonlar (parol, manzil, telefon...) va qaysi manbalardan — sanalari bilan",
+    appliesTo: ["email"],
+  },
+  {
+    id: "email-score",
+    title: "Umumiy baho va Timeline",
+    icon: "Gauge",
+    description:
+      "IntelBase uslubi: Haqiqiyligi va Ochiqlik ballari — har ball NIMA UCHUN shunday ekanini asoslar bilan + barcha voqealar xronologiyasi",
+    appliesTo: ["email"],
+  },
   // ---- Username / Telefon / Ism: OSINT Framework bepul manbalari ----
   {
     id: "whatsmyname",
@@ -280,6 +328,14 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
     icon: "DatabaseZap",
     description:
       "Eng aniq breach baza: email qaysi oqishlarda, qanday maydonlar oshkor bo'lgan. Kalit: haveibeenpwned.com/API/Key",
+    appliesTo: ["email"],
+  },
+  {
+    id: "emailrep",
+    title: "EmailRep obro'ysi",
+    icon: "ShieldCheck",
+    description:
+      "Email obro'si (reputation), oqishlarda qatnashgani va topilgan profil platformalari. Kalit: emailrep.io/update (oyiga 200 bepul)",
     appliesTo: ["email"],
   },
   {

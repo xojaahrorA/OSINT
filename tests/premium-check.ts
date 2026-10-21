@@ -23,7 +23,7 @@ const ok = (cond: boolean, label: string) => {
 };
 
 console.log("=== 1. Premium metalar ===");
-ok(PREMIUM_SOURCES.length === 11, `11 ta premium manba aniqlangan (${PREMIUM_SOURCES.length})`);
+ok(PREMIUM_SOURCES.length === 12, `12 ta premium manba aniqlangan (${PREMIUM_SOURCES.length})`);
 ok(
   PREMIUM_SOURCES.every((s) => s.envKey && s.getKeyUrl && s.what),
   "har bir meta envKey/getKeyUrl/what maydonlariga ega"
@@ -31,7 +31,7 @@ ok(
 
 console.log("=== 2. Kalit holati (env bo'sh — hammasi missing) ===");
 const missing = premiumMissing();
-ok(missing.length === 11, `kalitsizlar ro'yxati 11 ta (${missing.length})`);
+ok(missing.length === 12, `kalitsizlar ro'yxati 12 ta (${missing.length})`);
 ok(PREMIUM_SOURCES.every((s) => !premiumKeySet(s.id)), "env bo'sh — premiumKeySet false");
 
 console.log("=== 3. DIRECT_RUNS'ga ulanganligi ===");
