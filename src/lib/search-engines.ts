@@ -324,6 +324,13 @@ function specHasSubject(spec: SubjectSpec): boolean {
   );
 }
 
+/** Rol/local-part so'zlari — email lokal qismi sifatida ishonchsiz */
+const EMAIL_ROLE_LOCAL = new Set([
+  "admin", "info", "support", "contact", "sales", "help", "mail", "mailbot",
+  "noreply", "no-reply", "office", "hr", "billing", "root", "test", "user",
+  "team", "hello", "servis", "xizmat", "abonent", "quyi",
+]);
+
 /**
  * So'rov subyektini ajratish:
  *  - Qo'shtirnoqli iboralar: BIRINCHISI maqsad («"Muhammad Karimov" (pasport
@@ -334,8 +341,13 @@ function specHasSubject(spec: SubjectSpec): boolean {
  *    (profil OR avatar)» → ism-familiya qavsdan tashqarida). 2-3 sof harfli
  *    so'z bo'lsa ism-familiya rejimi; aks holda reformulatsiya qilingan
  *    so'rov — birinchi so'z maqsad, qolgani kontekst.
+ *
+ * opts.emailLocal=true (faqat rasm qidiruvi): email subyektining LOKAL QISMI
+ * ham maqsad hisoblanadi — rasm sahifalarida to'liq email deyarli hech qachon
+ * yozilmaydi, lekin «durov@gmail.com» egasining rasmlarida «durov» nomi
+ * uchraydi. Ishonch sharti: lokal qism 5+ belgi va rol-so'z (info/admin...) emas.
  */
-function extractSubject(query: string): SubjectSpec {
+function extractSubject(query: string, opts?: { emailLocal?: boolean }): SubjectSpec {
   const spec: SubjectSpec = {
     anyBoundary: [],
     anyExact: [],
@@ -392,6 +404,19 @@ function extractSubject(query: string): SubjectSpec {
   spec.anyBoundary = [...new Set(spec.anyBoundary)];
   spec.anyExact = [...new Set(spec.anyExact)];
 
+  // Email lokal qismi zaxirasi (faqat rasm qidiruvi so'raydi): rasm
+  // sahifalarida to'liq email ko'rinmaydi — lokal qism (username) ko'rinadi.
+  if (opts?.emailLocal) {
+    for (const t of [...spec.anyBoundary, ...spec.anyExact]) {
+      const m = t.match(/^[\w.+-]{5,}@([\w-]+\.)+[a-z]{2,}$/i);
+      if (!m) continue;
+      const local = t.split("@")[0].toLowerCase();
+      if (local.length >= 5 && !EMAIL_ROLE_LOCAL.has(local) && !spec.anyBoundary.includes(local)) {
+        spec.anyBoundary.push(local);
+      }
+    }
+  }
+
   // Kontekst zaxirasi: qo'shtirnoqsiz qolgan kalit so'zlar (OR-guruhlar
   // ichidagilar) — maqsad va operatorlar olib tashlangan. Modul mavzusi
   // majburiy bo'lgan modullar (leak/document) uchun ishlatiladi.
@@ -401,6 +426,18 @@ function extractSubject(query: string): SubjectSpec {
     .replace(/\s+/g, " ")
     .trim();
   spec.context.push(...normalizeHay(fallbackCore).split(/\s+/).filter(Boolean));
+
+  // SITE: domeni KONTEKST bo'ladi — dvigatel ba'zan site: operatorini
+  // e'tiborsiz qoldirib umumiy sahifalar qaytaradi (masalan, Vikipediya).
+  // «site:pastebin.com "X"» uchun kontekstda «pastebin» bo'lsa, pastebin'da
+  // yo'q sahifa requireContext filtridan o'tolmaydi (jonli testda topilgan
+  // teshik: site:li so'rovlar kontekstsiz bo'lib qolardi).
+  for (const sm of query.matchAll(/site:([a-z0-9.-]+)/gi)) {
+    const d = sm[1].toLowerCase();
+    spec.context.push(d);
+    spec.context.push(...d.split(".").filter((p) => p.length >= 3 && p !== "www"));
+  }
+
   const subjWords = new Set([...(spec.person ?? []), ...spec.anyBoundary]);
   spec.context = [...new Set(spec.context.filter((w) => w.length >= 3 && !subjWords.has(w)))];
   return spec;
@@ -1093,7 +1130,9 @@ export function imageSubjectKeep(
   query: string,
   entries: { title?: string; desc?: string; page: string; file: string }[]
 ): boolean[] {
-  const spec = extractSubject(query);
+  // emailLocal: rasm sahifalarida to'liq email emas, lokal qism (username)
+  // yoziladi — «durov@gmail.com» egasining rasmi «durov.jpg» nomida topiladi
+  const spec = extractSubject(query, { emailLocal: true });
   const strict = specHasSubject(spec);
   return entries.map((m) =>
     !strict ||
@@ -1231,6 +1270,128 @@ async function openverseImages(
   return results;
 }
 
+/** Wikimedia Commons rasm API — kalitsiz, barqaror.
+ * MUHIM: Wikimedia sukut bo'yicha UA'ni bloklaydi (403) — izohli UA majburiy
+ * (jonli testda tekshirildi: oddiy UA → 403, izohli UA → 200).
+ * Taniqli shaxslar va ommaviy joylar uchun eng ishonchli bepul zaxira. */
+const COMMONS_UA =
+  "OSINT-Radar/1.0 (OSINT scanner; contact: admin@osint-radar.uz) fetch";
+
+async function commonsImages(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  const api =
+    `https://commons.wikimedia.org/w/api.php?action=query&generator=search` +
+    `&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&gsrlimit=${Math.max(num, 8)}` +
+    `&prop=imageinfo&iiprop=url&iiurlwidth=480&format=json&origin=*`;
+  const body = await fetchHtml(api, {
+    timeoutMs: 9000,
+    headers: { Accept: "application/json", "User-Agent": COMMONS_UA },
+  });
+  const j = JSON.parse(body) as {
+    query?: {
+      pages?: Record<
+        string,
+        {
+          title?: string;
+          imageinfo?: {
+            url?: string;
+            descriptionurl?: string;
+            thumburl?: string;
+          }[];
+        }
+      >;
+    };
+  };
+  const pages = Object.values(j.query?.pages ?? {});
+  const raws = pages
+    .map((p) => ({
+      title: p.title?.replace(/^File:/, "").replace(/\.[a-z]{3,4}$/i, ""),
+      page: p.imageinfo?.[0]?.descriptionurl ?? "",
+      file: p.imageinfo?.[0]?.url ?? "",
+      thumb: p.imageinfo?.[0]?.thumburl,
+    }))
+    .filter((x) => x.file);
+  const keeps = imageSubjectKeep(
+    query,
+    raws.map((x) => ({ title: x.title, page: x.page, file: x.file }))
+  );
+  const results: SearchResultItem[] = [];
+  for (let i = 0; i < raws.length && results.length < num; i++) {
+    if (!keeps[i]) continue;
+    const x = raws[i];
+    results.push({
+      name: (x.title || `Rasm — ${query}`).slice(0, 200),
+      url: x.page || x.file,
+      snippet: x.file,
+      host_name: "commons.wikimedia.org",
+      favicon: x.thumb,
+    });
+  }
+  return results;
+}
+
+/** Flickr ochiq feed — kalitsiz (best-effort: vaqti-vaqti bilan 502 qaytaradi,
+ * xato bo'lsa keyingi variantga o'tadi). media.m — kichik o'lcham, link — sahifa. */
+async function flickrImages(
+  query: string,
+  num: number
+): Promise<SearchResultItem[]> {
+  const body = await fetchHtml(
+    `https://www.flickr.com/services/feeds/photos_public.gne?format=json&nojsoncallback=1&text=${encodeURIComponent(query)}&per_page=${Math.max(num, 8)}`,
+    { timeoutMs: 9000, headers: { Accept: "application/json" } }
+  );
+  let j: { items?: { title?: string; link?: string; media?: { m?: string } }[] };
+  try {
+    j = JSON.parse(body);
+  } catch {
+    return []; // HTML error sahifa (502 va h.k.) — keyingi variant
+  }
+  const raws = (j.items ?? [])
+    .filter((x) => x.media?.m && /^https?:\/\//i.test(x.media.m))
+    .map((x) => ({
+      title: x.title,
+      page: x.link && /^https?:\/\//i.test(x.link) ? x.link : x.media!.m!,
+      file: x.media!.m!,
+    }));
+  const keeps = imageSubjectKeep(
+    query,
+    raws.map((x) => ({ title: x.title, page: x.page, file: x.file }))
+  );
+  const results: SearchResultItem[] = [];
+  for (let i = 0; i < raws.length && results.length < num; i++) {
+    if (!keeps[i]) continue;
+    const x = raws[i];
+    results.push({
+      name: (x.title || `Rasm — ${query}`).slice(0, 200),
+      url: x.page,
+      snippet: x.file,
+      host_name: hostOf(x.page),
+      favicon: x.file,
+    });
+  }
+  return results;
+}
+
+/**
+ * Rasm so'rovining TOZA subyekti — qavslar/OR/operatorlar va foto-profil
+ * kabi bezovta so'zlar olib tashlanadi («Pavel Durov (profil OR avatar)» →
+ * «Pavel Durov»). Qo'shtirnoqli zaxira so'rovda ishlatiladi: Bing ko'p
+ * so'zli so'rovni erkin talqin qilib, boshqa odamlar rasmlarini ham
+ * aralashtiradi — qo'shtirnoq aniq iborani majburlaydi.
+ */
+export function imageQueryCore(query: string): string {
+  const words = query
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/site:\S+|filetype:\S+|inurl:\S+|intitle:\S+|\bOR\b|[()"]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter((w) => w.length >= 2);
+  return words.join(" ");
+}
+
 export async function bingImagesSearch(
   query: string,
   num: number
@@ -1238,15 +1399,29 @@ export async function bingImagesSearch(
   // Bing rasm qidiruvi VAQTI-VAQTI bilan JS-shell (metadata'siz) sahifa
   // qaytaradi — shuning uchun bir nechta variant navbat bilan sinab ko'riladi:
   //   1-2. Bing search/async endpoint'lari (eng dolzarb natijalar)
-  //   3.   Openverse API — har doim barqaror ishonchli zaxira
-  //   4.   Bing boshqa format — oxirgi urinish
+  //   3.   Wikimedia Commons API — izohli UA bilan barqaror (jonli test: 200)
+  //   4.   Openverse API — barqaror ishonchli zaxira
+  //   5.   Flickr ochiq feed — best-effort (502 bo'lsa o'tkazib yuboriladi)
+  //   6.   Bing boshqa format — oxirgi urinish
+  //   7-8. QO'SHTIRNOQLI subyekt — ko'p so'zli so'rovlar (ism-familiya) Bing'da
+  //        erkin talqin qilinadi; qo'shtirnoq aniq odamning rasmlarini beradi.
   // To'liq metadata kelgan variant darrov qaytariladi; hammasi bo'sh bo'lsa
   // [] qaytadi (xato emas — bu tarmoqda rasm topilmadi).
+  const core = imageQueryCore(query);
+  const quoted = core && core !== query.trim() ? `"${core}"` : "";
   const variants: { run: () => Promise<SearchResultItem[]> }[] = [
     { run: () => bingImagesOnce("search", query, num, "") },
     { run: () => bingImagesOnce("async", query, num, "") },
+    { run: () => commonsImages(core || query, num) },
     { run: () => openverseImages(query, num) },
+    { run: () => flickrImages(core || query, num) },
     { run: () => bingImagesOnce("search", query, num, "&FORM=IRFLTR&adlt=moderate") },
+    ...(quoted
+      ? [
+          { run: () => bingImagesOnce("search", quoted, num, "") },
+          { run: () => commonsImages(core, num) },
+        ]
+      : []),
   ];
   for (const v of variants) {
     try {
@@ -1255,7 +1430,7 @@ export async function bingImagesSearch(
     } catch {
       /* HTTP/parse xato — keyingi variant */
     }
-    await sleep(300 + Math.floor(Math.random() * 300));
+    await sleep(250 + Math.floor(Math.random() * 250));
   }
   return [];
 }

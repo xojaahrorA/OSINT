@@ -6,11 +6,15 @@ import {
   BookmarkCheck,
   BookmarkPlus,
   ExternalLink,
+  FileBadge,
+  Image as ImageIcon,
+  KeyRound,
   Link2,
   Play,
   Plus,
   ShieldAlert,
   ShieldQuestion,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +33,13 @@ const KIND_LABELS: Record<PivotCandidate["kind"], string> = {
   ip: "IP",
   company: "KOMPANIYA",
 };
+
+function signalIcon(label: string) {
+  if (/parol/i.test(label)) return KeyRound;
+  if (/hujjat|jshshir/i.test(label)) return FileBadge;
+  if (/rasm/i.test(label)) return ImageIcon;
+  return Sparkles;
+}
 
 export function ResultCard({
   item,
@@ -125,6 +136,22 @@ export function ResultCard({
                 Profil bor
               </Badge>
             )}
+            {!skipped && item.signal && (() => {
+              const SigIcon = signalIcon(item.signal.label);
+              return (
+                <Badge
+                  className={`h-4 px-1.5 text-[9px] ${
+                    item.signal.level === "strong"
+                      ? "bg-red-500/10 text-red-400 border border-red-500/25"
+                      : "bg-amber-500/10 text-amber-400 border border-amber-500/25"
+                  }`}
+                  title={item.signal.note}
+                >
+                  <SigIcon className="w-2.5 h-2.5 mr-0.5" />
+                  {item.signal.label}
+                </Badge>
+              );
+            })()}
             {!skipped && verdict && (
               <Badge
                 className={`h-4 px-1.5 text-[9px] ${
@@ -140,6 +167,25 @@ export function ResultCard({
               </Badge>
             )}
           </div>
+          {/* Rasm topilma ko'rinishi — Bing/Openverse rasmlarida thumbnail bor */}
+          {!skipped && item.signal?.label === "Rasm topilma" && item.favicon && (
+            <a
+              href={item.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 block overflow-hidden rounded-md border bg-secondary/40 w-fit max-w-full"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={item.favicon}
+                alt={item.name}
+                className="max-h-44 w-auto max-w-full"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = "none";
+                }}
+              />
+            </a>
+          )}
           {item.snippet && (
             <p className="mt-1.5 text-xs text-muted-foreground leading-relaxed line-clamp-2">
               {isProfileLink && (

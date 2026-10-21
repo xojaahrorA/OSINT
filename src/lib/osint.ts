@@ -25,6 +25,17 @@ export const TARGET_TYPES: { value: TargetType; label: string; hint: string; exa
   { value: "ip", label: "IP manzil", hint: "IPv4 yoki IPv6", example: "8.8.8.8" },
 ];
 
+/**
+ * Modul mavzusi belgisi (IntelBase uslubi): bu topilma NIMA UCHUN chiqqanini
+ * tushuntiradi — «Parol izi», «Hujjat belgisi», «Rasm topilma» va h.k.
+ * Qancha ishonchli: strong — modul mavzusining aniq izi, medium — manba mos.
+ */
+export interface ResultSignal {
+  level: "strong" | "medium";
+  label: string;
+  note: string;
+}
+
 export interface SearchResultItem {
   name: string;
   url: string;
@@ -36,6 +47,8 @@ export interface SearchResultItem {
   verified?: "yes" | "no" | "unknown";
   /** Tekshiruv izohi — nima uchun shunday xulosa qilingani */
   verifyNote?: string;
+  /** Modul mavzusi belgisi — leak/document/photo modullarida qo'shiladi */
+  signal?: ResultSignal;
 }
 
 export interface ModuleResult {
@@ -801,12 +814,14 @@ export const OSINT_MODULES: OsintModuleDef[] = [
       `"${t}" (parol OR password OR пароль) (oqish OR leak OR dump OR bazalar OR reestr)`,
       `site:pastebin.com "${t}"`,
       `"${t}" (filetype:txt OR filetype:sql OR filetype:csv OR filetype:log) (login OR parol OR password OR пароль)`,
+      `site:justpaste.it "${t}" (password OR parol OR пароль OR login OR credentials)`,
     ],
     deepQueries: (t) => [
       `"${t}" (site:controlc.com OR site:dpaste.org OR site:rentry.co OR site:paste.ee OR site:gist.github.com)`,
       `"${t}" (site:github.com OR site:gitlab.com) (password OR parol OR пароль OR credentials OR config OR secret)`,
       `"${t}" (login OR akkaunt OR hisob OR kirish) (sizib OR oqish OR tarqaldi OR sizdi OR leak OR olingan)`,
       `"${t}" (baza OR "ma'lumotlar bazasi" OR ro'yxat) (site:pastebin.com OR leak OR dump OR oqish)`,
+      `"${t}" ("email:pass" OR "login:pass" OR "combo list" OR "passwords.txt" OR "credentials.txt" OR "database dump")`,
     ],
     num: 6,
   },
@@ -821,12 +836,14 @@ export const OSINT_MODULES: OsintModuleDef[] = [
       `"${t}" (pasport OR passport OR паспорт OR guvohnoma OR hujjat OR "ID karta")`,
       `"${t}" filetype:pdf (pasport OR passport OR паспорт OR guvohnoma OR ariza OR rezyume OR CV OR anketa)`,
       `"${t}" (site:scribd.com OR site:docdroid.net OR site:pdfcoffee.com OR site:vdoc.pub OR site:idoc.pub)`,
+      `"${t}" (site:drive.google.com OR site:docs.google.com OR site:archive.org) (pasport OR hujjat OR guvohnoma OR ariza OR rezyume)`,
     ],
     deepQueries: (t) => [
       `"${t}" (filetype:doc OR filetype:docx OR filetype:xlsx OR filetype:pptx OR filetype:rtf OR filetype:vcf)`,
       `"${t}" (site:t.me OR site:telegra.ph) (pasport OR паспорт OR guvohnoma OR hujjat OR ro'yxat OR baza)`,
       `"${t}" (jshshir OR JSHSHIR OR pinfl OR ПИНФЛ OR seriya OR "passport series" OR "pasport seriya")`,
       `"${t}" (reestr OR baza OR ro'yxat OR ma'lumotnoma OR arxiv) (pasport OR паспорт OR hujjat OR jshshir)`,
+      `"${t}" ("pasport seriyasi" OR "паспорт серия" OR "shaxsiy ma'lumotlar" OR jshshir) (baza OR oqish OR leak OR dump OR tarqaldi)`,
     ],
     num: 6,
   },
@@ -842,12 +859,14 @@ export const OSINT_MODULES: OsintModuleDef[] = [
       `bing-images:${t}`,
       `"${t}" (foto OR rasm OR photo OR img) (site:imgur.com OR site:flickr.com OR site:postimages.org OR site:ibb.co)`,
       `"${t}" (rasmlari OR fotolari OR photos OR gallery OR galereya)`,
+      `"${t}" (site:500px.com OR site:deviantart.com OR site:behance.net) (portfolio OR rasm OR photo)`,
     ],
     deepQueries: (t) => [
       `bing-images:${t} (profil OR avatar OR foto)`,
       `"${t}" (site:picuki.com OR site:imginn.com OR site:greatfon.com)`,
       `"${t}" (site:pinterest.com OR site:tumblr.com OR site:imgur.com OR site:flickr.com)`,
       `"${t}" (site:t.me OR site:telegra.ph) (rasm OR foto OR photo OR media)`,
+      `"${t}" (profil rasmi OR avatar OR "profile photo" OR "profile picture")`,
     ],
     num: 6,
   },

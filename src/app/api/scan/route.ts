@@ -21,6 +21,7 @@ import {
   SYNTHESIS_MODULES,
   SYNTHESIS_RUNS,
 } from "@/lib/target-score";
+import { annotateAndSort, signalForModule } from "@/lib/result-signals";
 import { verifyProfileLinks } from "@/lib/profile-verify";
 import { nameVariants } from "@/lib/name-variants";
 import {
@@ -616,12 +617,21 @@ export async function POST(req: NextRequest) {
 
       // Yakuniy module_done hodisalari
       for (const m of applicable) {
-        const arr = collector.get(m.id)!;
+        const raw = collector.get(m.id)!;
         const st = doneByModule.get(m.id)!;
-        if (st.failed > 0 && arr.length === 0) {
+        if (st.failed > 0 && raw.length === 0) {
           log("error", `[${m.title}] Barcha so'rovlar bajarilmadi (rate-limit yoki tarmoq).`);
         }
-        log("ok", `[${m.title}] Yakunlandi — ${arr.length} ta natija`);
+        // Signal belgilari (IntelBase uslubi): leak/document/photo modullarida
+        // har topilmaga NIMA uchun chiqqani yoziladi va aniq izlar yuqoriga
+        // suriladi (strong → medium → oddiy, ichki tartib saqlanadi).
+        const sigKind = signalForModule(m.id);
+        const arr = sigKind ? annotateAndSort(sigKind, raw) : raw;
+        const strong = arr.filter((r) => r.signal?.level === "strong").length;
+        log(
+          "ok",
+          `[${m.title}] Yakunlandi — ${arr.length} ta natija${strong > 0 ? ` · ${strong} ta aniq iz` : ""}`
+        );
         send({
           type: "module_done",
           moduleId: m.id,
