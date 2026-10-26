@@ -17,6 +17,7 @@ import {
   telegramProfileSource,
   telegramFeedSource,
   telegramBotApiSource,
+  telegramMentionsSource,
 } from "@/lib/telegram";
 import { verifyProfileLinks } from "@/lib/profile-verify";
 
@@ -2115,6 +2116,7 @@ export const DIRECT_RUNS: Record<
   telegram: telegramProfileSource,
   "telegram-feed": telegramFeedSource,
   "telegram-bot": telegramBotApiSource,
+  "telegram-mentions": telegramMentionsSource,
   // Maltego uslubidagi transformlar (email/ism → bog'liq domenlar; otx premium'da)
   "reverse-whois": reverseWhoisSource,
   // Premium (API kalitli) manbalar — .env'dagi kalitlar bilan faollashadi
@@ -2134,7 +2136,7 @@ export function directSourceIdsFor(type: TargetType): string[] {
       : type === "email"
         ? ["breaches", "stealer-logs", "leakcheck", "gravatar", "mailbox", "corp-domain", "github-email", "email-username", "hibp", "hunter", "reverse-whois", "email-score", ...PREMIUM_SEARCH_IDS]
         : type === "username"
-          ? ["stealer-logs", "whatsmyname", "username-probe", "email-discovery", "telegram", "telegram-feed", "telegram-bot", ...PREMIUM_SEARCH_IDS]
+          ? ["stealer-logs", "whatsmyname", "username-probe", "email-discovery", "telegram", "telegram-feed", "telegram-bot", "telegram-mentions", ...PREMIUM_SEARCH_IDS]
           : type === "phone"
             ? ["phone-meta", "numlookup", ...PREMIUM_SEARCH_IDS]
             : type === "name"

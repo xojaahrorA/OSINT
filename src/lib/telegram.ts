@@ -257,7 +257,6 @@ export async function telegramFeedSource(rawTarget: string): Promise<SearchResul
 }
 
 // ===== 3. Telegram Bot API (TELEGRAM_BOT_TOKEN — mutlaqo bepul, @BotFather) =====
-
 interface TgChat {
   id?: number;
   type?: string;
@@ -361,5 +360,82 @@ export async function telegramBotApiSource(rawTarget: string): Promise<SearchRes
       )
     );
   }
+  return out;
+}
+
+// ===== 4. Lyzem — Telegram OCHIQ postlar qidiruv tizimi (kalit talab qilinmaydi) =====
+//
+// Foydalanuvchi savoli: «shaxs ochiq kanallarga/guruhlarga YOZGANLARI ham
+// tekshirilsin». Texnik haqiqat:
+//   • Shaxsiy akkauntning GURUHLARDAGI xabarlari tashqaridan O'QILMAYDI —
+//     Telegram arxitekturasi bo'yicha ular faqat o'sha guruh a'zolariga ko'rinadi
+//     (hech qanday API kalit bu cheklovni yengib o'tolmaydi).
+//   • OCHIQ kanal postlari esa indekslanadi — Lyzem (lyzem.com) Telegram'ning
+//     ochiq kanal/guruh postlarini bepul qidiruvga beradi. Shaxsning username'i
+//     tilga olingan (mencion qilingan) ochiq postlar shu yerdan topiladi.
+//
+// HTML tuzilishi: <li class="search-result"> ... title="channel|group|message",
+//   search-result-title > a[href="https://t.me/<slug>"], search-result-descr > a (matn)
+
+interface LyzemHit {
+  type: string; // channel | group | message
+  url: string;
+  title: string;
+  text: string;
+}
+
+function parseLyzem(html: string): LyzemHit[] {
+  const hits: LyzemHit[] = [];
+  const blocks = html.split('<li class="search-result">').slice(1);
+  for (const b of blocks.slice(0, 12)) {
+    const type = (b.match(/title="(channel|group|message)"/)?.[1] ?? "").toLowerCase();
+    // Birinchi havola — sarlavha linki (kanal manzili yoki aniq post)
+    const href = b.match(/<a href="(https:\/\/t\.me\/[^"]+)"/)?.[1] ?? "";
+    const title = cleanHtml(b.match(/search-result-title">\s*<a[^>]*>([\s\S]*?)<\/a>/)?.[1] ?? "");
+    const descr = cleanHtml(
+      b.match(/search-result-descr">\s*<a[^>]*>([\s\S]*?)<\/a>/)?.[1] ?? ""
+    );
+    if (!href) continue;
+    hits.push({ type, url: href, title: title.slice(0, 120), text: descr.slice(0, 500) });
+  }
+  return hits;
+}
+
+export async function telegramMentionsSource(rawTarget: string): Promise<SearchResultItem[]> {
+  const u = normUser(rawTarget);
+  if (!u) return [];
+
+  // Ikkala yozuvda parallel qidirish: «username» va «@username»
+  const [plain, at] = await Promise.all([
+    fstatus(`https://lyzem.com/search?q=${encodeURIComponent(u)}`, 10_000, 300_000),
+    fstatus(`https://lyzem.com/search?q=${encodeURIComponent(`@${u}`)}`, 10_000, 300_000),
+  ]);
+
+  const seen = new Set<string>();
+  const hits: LyzemHit[] = [];
+  for (const page of [plain, at]) {
+    if (!page || !page.text.includes("search-result")) continue;
+    for (const h of parseLyzem(page.text)) {
+      if (seen.has(h.url)) continue;
+      seen.add(h.url);
+      hits.push(h);
+    }
+  }
+  if (hits.length === 0) return [];
+
+  const typeUz: Record<string, string> = { channel: "kanal", group: "guruh", message: "post" };
+  const out: SearchResultItem[] = hits.slice(0, 10).map((h) =>
+    item(
+      `Telegram tilga olish: ${h.title || `@${u}`}`,
+      h.url,
+      [
+        h.type ? `Turi: ${typeUz[h.type] ?? h.type}` : "",
+        h.text ? h.text.slice(0, 300) : "Tavsif/matn ko'rinmaydi",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      "lyzem.com"
+    )
+  );
   return out;
 }

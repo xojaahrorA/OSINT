@@ -264,6 +264,14 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
       "Rasmiy API'dan ANIQ javob: chat id, turi, bio, a'zolar soni. Token: @BotFather (mutlaqo bepul)",
     appliesTo: ["username"],
   },
+  {
+    id: "telegram-mentions",
+    title: "Telegram tilga olishlar",
+    icon: "MessageSquareQuote",
+    description:
+      "Username OCHIQ kanal/guruh postlarida QAYERLARDA tilga olingan (Lyzem qidiruvi) — eslatmalar, reklama, screenshotlar. Shaxsning yopiq guruh xabarlari Telegram arxitekturasi bo'yicha tashqaridan o'qilmaydi",
+    appliesTo: ["username"],
+  },
   // ---- Maltego uslubidagi transformlar: bir obyekt → bog'liq obyektlar ----
   {
     id: "otx",

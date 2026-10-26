@@ -52,6 +52,7 @@ import {
   Send,
   Rss,
   MessageCircle,
+  MessageSquareQuote,
   Binoculars,
   Waypoints,
   Contact,
@@ -157,6 +158,7 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   telegram: Send,
   "telegram-feed": Rss,
   "telegram-bot": Bot,
+  "telegram-mentions": MessageSquareQuote,
   "telegram-search": MessageCircle,
   // Maltego uslubidagi transformlar
   otx: Binoculars,
