@@ -1,4 +1,5 @@
 import { runDiagnostics } from "@/lib/doctor";
+import { loadDbKeys } from "@/lib/keys";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -11,6 +12,7 @@ export const maxDuration = 60;
  */
 export async function GET() {
   try {
+    await loadDbKeys(); // bazadagi kalitlar — diagnostikada ham ko'rinishi uchun
     const report = await runDiagnostics();
     return Response.json(report);
   } catch (e) {

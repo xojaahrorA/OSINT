@@ -20,6 +20,19 @@ model Bookmark {
   @@unique([url, query])
 }
 
+// API kalitlari — foydalanuvchi sozlamalar sahifasidan kiritadi.
+// SQLite bazada saqlanadi: platforma qayta ishga tushsa ham (.env tozalansa ham)
+// kalitlar YO'QOLMAYDI. Skaner/diagnostika ishga tushganda loadDbKeys() ularni
+// process.env'ga birlashtiradi — premium manbalar avtomatik faollashadi.
+model ApiKey {
+  id        String   @id @default(cuid())
+  envKey    String   @unique // masalan TELEGRAM_BOT_TOKEN, SERPER_API_KEY
+  value     String   // kalitning o'zi
+  label     String?  // ko'rsatma uchun (masalan "Telegram bot tokeni")
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
 // Skaner sessiyasi tarixi — har bir qidirilgan shaxs/maqsad bitta yozuvda
 // to'liq saqlanadi. Sahifa yangilansa ham natijalar yo'qolmaydi: oxirgi
 // sessiya avtomatik tiklanadi, eski sessiyalar "Tarix" panelida turadi.

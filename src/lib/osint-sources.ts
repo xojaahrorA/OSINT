@@ -1693,6 +1693,235 @@ async function whatsMyNameSource(
   return out;
 }
 
+// ===== Email kashf qilish (username → email) — foydalanuvchining asosiy so'rovi =====
+// «Bitta username orqali email va boshqa narsalar topilsin». Maltego'dagi
+// eMailAddress transform analogi — hammasi BEPUL, API kaliti shart emas:
+//
+//  1. GRAVATAR PROBASI: username@<domen> variantlari md5 hash qilib
+//     gravatar.com/avatar/<md5>?d=404 ga so'raladi — HTTP 200 = o'sha email
+//     uchun Gravatar akkaunti MAVJUD (bu odam o'sha email bilan bir joyda
+//     foydalangan) — 2010-yildan beri ma'lum OSINT usuli (email existence check).
+//     Topilgan email uchun profil JSON o'qilib ism/bio/lokatsiya solishtiriladi:
+//     mos kelsa «TASDIQLANDI», aks holda «kandidat».
+//  2. GITHUB CHUQUR: public email/blog/twitter/lokatsiya — profil bo'lsa darhol.
+//  3. KEYBASE API: ism, bio, twitter/github/sayt dalillari (proofs).
+//  4. STEAM: haqiqiy ism (real name), davlat bayrog'i, a'zolik yoshi.
+
+const EMAIL_DISCOVERY_PROVIDERS = [
+  "gmail.com", "proton.me", "protonmail.com", "outlook.com", "hotmail.com",
+  "yahoo.com", "icloud.com", "yandex.ru", "mail.ru", "inbox.ru", "list.ru",
+  "bk.ru", "ukr.net", "gmx.com",
+];
+
+interface GravatarProbeHit {
+  email: string;
+  md5: string;
+}
+
+/** Gravatar profil mosligini baholash (test uchun eksport qilingan sof funksiya).
+ *  username/dots-strip moslik yoki ism ichida username bo'lishi — TASDIQLANGAN. */
+export function assessGravatarMatch(
+  u: string,
+  preferredUsername?: string,
+  displayName?: string
+): { verified: boolean; reason: "username" | "ism" | "yo'q" } {
+  const un = u.toLowerCase().replace(/[.\-_]/g, "");
+  const gu = (preferredUsername ?? "").toLowerCase().replace(/[.\-_]/g, "");
+  if (gu && (gu === un || gu.includes(un))) return { verified: true, reason: "username" };
+  const disp = (displayName ?? "").trim().toLowerCase();
+  if (disp && un.length >= 4 && disp.includes(un)) return { verified: true, reason: "ism" };
+  return { verified: false, reason: "yo'q" };
+}
+
+async function gravatarEmailProbe(u: string): Promise<SearchResultItem[]> {
+  const cands = EMAIL_DISCOVERY_PROVIDERS.map((d) => `${u}@${d}`);
+  const md5s = new Map(
+    cands.map((e) => [e, createHash("md5").update(e.toLowerCase()).digest("hex")])
+  );
+  const hits: GravatarProbeHit[] = [];
+  const CONC = 5;
+  for (let i = 0; i < cands.length; i += CONC) {
+    const slice = cands.slice(i, i + CONC);
+    const codes = await Promise.all(
+      slice.map(async (e) => {
+        try {
+          const res = await fetch(`https://www.gravatar.com/avatar/${md5s.get(e)}?d=404`, {
+            headers: { "User-Agent": UA, Accept: "*/*" },
+            signal: timeout(6000),
+            redirect: "follow",
+          });
+          return res.status;
+        } catch {
+          return 0;
+        }
+      })
+    );
+    slice.forEach((e, j) => {
+      if (codes[j] === 200) hits.push({ email: e, md5: md5s.get(e)! });
+    });
+    if (i + CONC < cands.length) await new Promise((r) => setTimeout(r, 300)); // yumshoq pauza
+  }
+
+  if (hits.length === 0) {
+    return [
+      item(
+        "Email kashf qilish: mashhur provayderlarda mos email topilmadi",
+        `https://gravatar.com/${encodeURIComponent(u)}`,
+        `${EMAIL_DISCOVERY_PROVIDERS.length} ta mashhur provayder (gmail, proton, outlook, yandex...) ${u}@... ko'rinishida Gravatar bazasida tekshirildi — faol akkaunt yo'q. Bu odam asosiy emailini ochiq gravatar'da bog'lamagan bo'lishi mumkin.`,
+        "gravatar.com"
+      ),
+    ];
+  }
+
+  // Har topilgan email uchun profil solishtirish
+  const out: SearchResultItem[] = [];
+  for (const h of hits.slice(0, 6)) {
+    const prof = await fj<{ entry?: GravatarEntry[] }>(
+      `https://en.gravatar.com/${h.md5}.json`,
+      7000
+    );
+    const e = prof?.entry?.[0];
+    const verified = assessGravatarMatch(u, e?.preferredUsername, e?.displayName).verified;
+    const accounts = (e?.accounts ?? [])
+      .map((a) => a.shortname)
+      .filter(Boolean)
+      .slice(0, 6)
+      .join(", ");
+    out.push(
+      item(
+        verified
+          ? `Email TASDIQLANDI: ${h.email}`
+          : `Email kandidat: ${h.email}`,
+        `https://gravatar.com/${encodeURIComponent(e?.preferredUsername ?? u)}`,
+        [
+          verified
+            ? "Gravatar profili username/ism bilan MOS KELDI — bu email ko'pincha shu odamniki (Gravatar har email uchun yagona hash asosida ishlaydi, boshqa odam bo'lishi deyarli imkonsiz)"
+            : "Gravatar akkaunti faol — email mavjud, ammo profil ismi mos kelmadi (boshqa odam yoki eski username bo'lishi mumkin)",
+          e?.displayName ? `Ism: ${e.displayName}` : "",
+          e?.currentLocation ? `Lokatsiya: ${e.currentLocation}` : "",
+          e?.aboutMe ? `Bio: ${e.aboutMe.slice(0, 140)}` : "",
+          accounts ? `Bog'langan akkauntlar: ${accounts}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        "gravatar.com"
+      )
+    );
+  }
+  return out;
+}
+
+async function githubDeepSource(u: string): Promise<SearchResultItem[]> {
+  const j = await fj<{
+    login?: string;
+    name?: string;
+    email?: string;
+    blog?: string;
+    twitter_username?: string;
+    location?: string;
+    created_at?: string;
+    company?: string;
+    bio?: string;
+    followers?: number;
+  }>(`https://api.github.com/users/${encodeURIComponent(u)}`, 8000, {
+    Accept: "application/vnd.github+json",
+  });
+  if (!j?.login) return []; // 404 / rate-limit — jimgina
+  const out: SearchResultItem[] = [
+    item(
+      `GitHub chuqur profil: ${j.name ?? j.login}`,
+      `https://github.com/${j.login}`,
+      [
+        j.email ? `Public email: ${j.email} — profil ochiq ko'rsatgan!` : "",
+        j.blog ? `Sayt/blog: ${j.blog}` : "",
+        j.twitter_username ? `Twitter/X: @${j.twitter_username}` : "",
+        j.company ? `Kompaniya: ${j.company}` : "",
+        j.location ? `Lokatsiya: ${j.location}` : "",
+        j.created_at ? `GitHub'ga qo'shilgan: ${j.created_at.slice(0, 10)}` : "",
+        j.followers !== undefined ? `${j.followers} obunachi` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ") || "Profil mavjud",
+      "github.com"
+    ),
+  ];
+  return out;
+}
+
+async function keybaseDeepSource(u: string): Promise<SearchResultItem[]> {
+  const j = await fj<{
+    them?: {
+      profile?: { full_name?: string; bio?: string; location?: string };
+      proofs_summary?: { by_presentation_group?: Record<string, unknown> };
+    };
+  }>(`https://keybase.io/_/api/1.0/user/lookup.json?username=${encodeURIComponent(u)}`, 8000);
+  const t = j?.them;
+  if (!t || (t.profile === undefined && !t.proofs_summary)) return [];
+  const proofs = Object.keys(t.proofs_summary?.by_presentation_group ?? {}).filter(
+    (k) => k !== "null"
+  );
+  if (!t.profile && proofs.length === 0) return [];
+  return [
+    item(
+      `Keybase profili: ${t.profile?.full_name ?? u}`,
+      `https://keybase.io/${encodeURIComponent(u)}`,
+      [
+        t.profile?.full_name ? `Ism: ${t.profile.full_name}` : "",
+        t.profile?.bio ? `Bio: ${t.profile.bio.slice(0, 120)}` : "",
+        t.profile?.location ? `Lokatsiya: ${t.profile.location}` : "",
+        proofs.length ? `Tasdiqlangan akkauntlar: ${proofs.slice(0, 8).join(", ")}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ") || "Profil mavjud",
+      "keybase.io"
+    ),
+  ];
+}
+
+async function steamDeepSource(u: string): Promise<SearchResultItem[]> {
+  const r = await fstatus(`https://steamcommunity.com/id/${encodeURIComponent(u)}`, 8000, 120_000);
+  if (!r || r.status !== 200) return [];
+  const title = (r.text.match(/<title>Steam Community :: ([^<]+)<\/title>/)?.[1] ?? "").trim();
+  if (!title || /error/i.test(title)) return [];
+  const realName = decodeHtml(
+    (r.text.match(/profile_real_name">([^<]+)</)?.[1] ?? "").trim()
+  );
+  const flag = (r.text.match(/countryflags\/([A-Za-z]{2})\.gif/)?.[1] ?? "").toUpperCase();
+  const level = (r.text.match(/friendPlayerLevel(?:\s|\w)*\D*(\d+)/)?.[1] ?? "").trim();
+  const summary = (r.text.match(/header_summary[^>]*>([^<]*)</)?.[1] ?? "").trim();
+  if (!realName && !flag && !level) return [];
+  return [
+    item(
+      `Steam profili: ${decodeHtml(title)}`,
+      `https://steamcommunity.com/id/${encodeURIComponent(u)}`,
+      [
+        realName ? `Haqiqiy ism: ${realName} — Steam real name ommaviy!` : "",
+        flag ? `Davlat: ${flag} (bayroq belgisidan)` : "",
+        level ? `Daraja: ${level}` : "",
+        summary ? decodeHtml(summary).slice(0, 120) : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      "steamcommunity.com"
+    ),
+  ];
+}
+
+/** Asosiy modul — 4 manba parallel: Gravatar email probasi + GitHub + Keybase + Steam */
+async function emailDiscoverySource(rawTarget: string): Promise<SearchResultItem[]> {
+  const u = rawTarget.trim().replace(/^@/, "").toLowerCase();
+  if (!/^[a-z0-9._-]{2,64}$/.test(u)) return [];
+  const [grav, gh, kb, steam] = await Promise.allSettled([
+    gravatarEmailProbe(u),
+    githubDeepSource(u),
+    keybaseDeepSource(u),
+    steamDeepSource(u),
+  ]);
+  const take = (x: PromiseSettledResult<SearchResultItem[]>) =>
+    x.status === "fulfilled" ? x.value : [];
+  return [...take(grav), ...take(gh), ...take(kb), ...take(steam)];
+}
+
 // ===== Telefon: razvedka (libphonenumber — offline, bloklanmaydi) =====
 
 const UZ_OPERATORS: [string, string][] = [
@@ -1879,6 +2108,7 @@ export const DIRECT_RUNS: Record<
   // Username / Telefon / Ism
   whatsmyname: whatsMyNameSource,
   "username-probe": usernameProbeSource,
+  "email-discovery": emailDiscoverySource,
   "phone-meta": phoneMetaSource,
   "wiki-people": wikiPeopleSource,
   // Telegram — Instant Messaging manbalari (API kaliti shart emas, Bot API kalitli)
@@ -1904,7 +2134,7 @@ export function directSourceIdsFor(type: TargetType): string[] {
       : type === "email"
         ? ["breaches", "stealer-logs", "leakcheck", "gravatar", "mailbox", "corp-domain", "github-email", "email-username", "hibp", "hunter", "reverse-whois", "email-score", ...PREMIUM_SEARCH_IDS]
         : type === "username"
-          ? ["stealer-logs", "whatsmyname", "username-probe", "telegram", "telegram-feed", "telegram-bot", ...PREMIUM_SEARCH_IDS]
+          ? ["stealer-logs", "whatsmyname", "username-probe", "email-discovery", "telegram", "telegram-feed", "telegram-bot", ...PREMIUM_SEARCH_IDS]
           : type === "phone"
             ? ["phone-meta", "numlookup", ...PREMIUM_SEARCH_IDS]
             : type === "name"

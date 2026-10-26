@@ -70,6 +70,7 @@ scripts/*
 !scripts/test-email-intel.ts
 !scripts/test-target-score.ts
 !scripts/test-result-signals.ts
+!scripts/test-email-discovery.ts
 worklog.md
 .zscripts/
 .agent*

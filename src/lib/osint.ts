@@ -218,6 +218,14 @@ export const DIRECT_MODULE_META: DirectModuleMeta[] = [
     appliesTo: ["username"],
   },
   {
+    id: "email-discovery",
+    title: "Email kashf qilish",
+    icon: "AtSign",
+    description:
+      "Username'dan email topish (Maltego analogi): 14 provayder Gravatar bazasida tekshiriladi — faol email topilsa profil ismi/lokatsiyasi bilan TASDIQLANADI; GitHub/Keybase/Steam'dan public email, sayt, ism va dalillar ham yig'iladi",
+    appliesTo: ["username"],
+  },
+  {
     id: "phone-meta",
     title: "Telefon razvedkasi",
     icon: "Phone",

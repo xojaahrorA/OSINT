@@ -146,6 +146,7 @@ const MODULE_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   // Username / Telefon / Ism — to'g'ridan-to'g'ri manbalar
   whatsmyname: ScanSearch,
   "username-probe": UserCheck,
+  "email-discovery": AtSign,
   "phone-meta": Phone,
   "wiki-people": BookOpen,
   // Yangi: ism variantlari, email izlari, email → username
@@ -1689,6 +1690,12 @@ export default function Home() {
             </Badge>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <Button asChild variant="outline" size="sm" className="gap-2">
+              <a href="/sozlamalar">
+                <KeyRound className="w-4 h-4" />
+                <span className="hidden sm:inline">Kalitlar</span>
+              </a>
+            </Button>
             <Button asChild variant="outline" size="sm" className="gap-2">
               <a href="/rasm-tahlil">
                 <Images className="w-4 h-4" />

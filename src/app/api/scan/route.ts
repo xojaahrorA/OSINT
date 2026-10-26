@@ -29,6 +29,7 @@ import {
   premiumFind,
   premiumHint,
 } from "@/lib/premium-sources";
+import { loadDbKeys } from "@/lib/keys";
 
 export const maxDuration = 180;
 
@@ -87,6 +88,9 @@ function withTimeout<T>(p: Promise<T>, ms: number, label = "query"): Promise<T> 
 }
 
 export async function POST(req: NextRequest) {
+  // Bazadagi kalitlarni env'ga birlashtirish — foydalanuvchi sozlamalar
+  // sahifasidan kiritgan kalitlar har skanda avtomatik faollashadi
+  await loadDbKeys();
   let body: {
     type?: string;
     query?: string;
