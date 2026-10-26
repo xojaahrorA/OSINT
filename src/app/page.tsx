@@ -103,6 +103,7 @@ import {
   type HistoryItem,
 } from "@/components/osint/history-sheet";
 import { SearchGuideDialog } from "@/components/osint/search-guide-dialog";
+import { TgHubPanel } from "@/components/osint/tg-hub-panel";
 import {
   OSINT_MODULES,
   TARGET_TYPES,
@@ -1764,6 +1765,9 @@ export default function Home() {
             Topilgan ma&apos;lumotlardan qonunga xilof maqsadda foydalanmang.
           </AlertDescription>
         </Alert>
+
+        {/* TG Guruh/Kanal skaneri — read-only ichki qidiruv */}
+        <TgHubPanel />
 
         {/* Qidiruv formasi */}
         <section className={step === "idle" ? "text-center pt-6 pb-2" : ""}>

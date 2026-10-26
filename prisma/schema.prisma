@@ -20,6 +20,28 @@ model Bookmark {
   @@unique([url, query])
 }
 
+// TG Guruh/Kanal skaneri — skan ro'yxatidagi guruh/kanallar.
+// Faqat OCHIQ guruhlar skanerlanadi (read-only: hech kimga yozilmaydi,
+// hech qayerga qo'shilmaydi). Diniy kontentli guruhlar `religious=true`
+// bilan belgilanadi va skan HECH QACHON o'tkazilmaydi.
+model TelegramGroup {
+  id         String    @id @default(cuid())
+  username   String    @unique // @belgisiz, kichik harflarda
+  title      String
+  kind       String    @default("group") // channel | group
+  members    Int       @default(0)
+  tgId       String?   // Telegram chat id (string ko'rinishda)
+  accessHash String?   // peer access hash — qidiruvda Resolve yo'q, to'g'ridan-to'g'ri ishlatiladi
+  source     String    @default("user") // preset | user
+  religious  Boolean   @default(false)
+  lastStatus String?   // ok | flood | error | skipped
+  lastScanAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([religious])
+  @@index([source])
+}
+
 // API kalitlari — foydalanuvchi sozlamalar sahifasidan kiritadi.
 // SQLite bazada saqlanadi: platforma qayta ishga tushsa ham (.env tozalansa ham)
 // kalitlar YO'QOLMAYDI. Skaner/diagnostika ishga tushganda loadDbKeys() ularni

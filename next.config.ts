@@ -10,6 +10,9 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
+  // gramjs (telegram) — katta Node-only paket (TCP/WS, BigInt); bundler'ga
+  // kiritilmaydi, runtime'da to'g'ridan-to'g'ri require qilinadi
+  serverExternalPackages: ["telegram"],
 };
 
 export default nextConfig;
