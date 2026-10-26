@@ -58,6 +58,23 @@ async function fetchPage(url: string): Promise<PageResponse | null> {
 const UNKNOWN_NOTE = "Sayt bot so'rovlarini bloklaydi (login-devor/captcha) — qo'lda ochib tekshiring";
 const GONE_NOTE = "Sayt profil yo'q deb javob berdi (HTTP 404) — natijadan olib tashlandi";
 
+// Bot-devor / captcha sahifalari imzolari — bu imzolar sahifada bo'lsa, HTTP 200
+// bo'lsa ham "tasdiqlandi" DEB BO'LMAYDI (Foydalanuvchi holati: Medium Cloudflare
+// "Just a moment..." sahifasini 200 bilan qaytargan va dastur "Profil tasdiqlandi"
+// deb noto'g'ri belgilagan edi — soxta ijobiy natija).
+// body fetchPage'da lowercased bo'ladi — imzolar ham kichik harflarda.
+const CHALLENGE_SIGNATURES: { s: string; note: string }[] = [
+  { s: "just a moment...", note: "Cloudflare devori bilan bloklandi — profil mavjud yoki yo'qligi aniqlanmadi" },
+  { s: "cf-chl", note: "Cloudflare challenge — aniqlanmadi (qo'lda ochib ko'ring)" },
+  { s: "attention required! | cloudflare", note: "Cloudflare bloki — aniqlanmadi" },
+  { s: "enable javascript and cookies to continue", note: "Sayt JS/cookie talab qiladi — aniqlanmadi" },
+  { s: "checking your browser before accessing", note: "Brauzer tekshiruvi (bot-devor) — aniqlanmadi" },
+  { s: "ddos-guard", note: "DDoS-Guard devori — aniqlanmadi" },
+  { s: "captcha-delivery", note: "DataDome captcha — aniqlanmadi" },
+  { s: "px-captcha", note: "PerimeterX captcha — aniqlanmadi" },
+  { s: "access to this page has been denied", note: "Sayt so'rovni rad etdi — aniqlanmadi" },
+];
+
 /**
  * Umumiy qoida: 404/410 → yo'q; imzo ro'yxatida bittasi bo'lsa shunga qarab;
  * qolgani aniqlanmadi. Har bir platforma o'z imzolarini qo'shadi.
@@ -73,6 +90,11 @@ async function genericCheck(
   const page = await fetchPage(url);
   if (!page) return { state: "unknown", note: "Saytga ulanib bo'lmadi (tarmoq/timeout) — qo'lda tekshiring" };
   if (page.status === 404 || page.status === 410) return { state: "no", note: GONE_NOTE };
+  // Bot-devor imzolari — HAR BIR hukmdan OLDIN tekshiriladi (200 bo'lsa ham soxta
+  // "tasdiqlandi" chiqmasligi uchun)
+  for (const { s, note } of CHALLENGE_SIGNATURES) {
+    if (page.body.includes(s)) return { state: "unknown", note };
+  }
   for (const { s, note } of opts.noSignatures ?? []) {
     if (page.body.includes(s)) return { state: "no", note: note ?? GONE_NOTE };
   }
@@ -203,7 +225,14 @@ const PLATFORMS: PlatformCheck[] = [
     name: "Medium",
     host: "medium.com",
     url: (u) => `https://medium.com/@${u}`,
-    check: (u) => genericCheck(`https://medium.com/@${u}`, { twoHundredIsYes: true }),
+    // Medium Cloudflare ortida: 200 bilan qaytgan "Just a moment..." sahifasi
+    // bo'lishi mumkin — shuning uchun faqat HAQIQIY profil imzosi bilan tasdiqlaymiz
+    check: (u) =>
+      genericCheck(`https://medium.com/@${u}`, {
+        yesSignatures: [
+          { s: '"profileid"', note: "Medium: profil tasdiqlandi (sahifada profil ma'lumoti bor)" },
+        ],
+      }),
   },
   {
     name: "Pinterest",
@@ -218,7 +247,13 @@ const PLATFORMS: PlatformCheck[] = [
     name: "Behance",
     host: "behance.net",
     url: (u) => `https://behance.net/${u}`,
-    check: (u) => genericCheck(`https://behance.net/${u}`, { twoHundredIsYes: true }),
+    // Behance ham bot-devor ishlatadi — faqat haqiqiy profil imzosi bilan
+    check: (u) =>
+      genericCheck(`https://behance.net/${u}`, {
+        yesSignatures: [
+          { s: 'data-profileid', note: "Behance: profil tasdiqlandi (sahifada profil ma'lumoti bor)" },
+        ],
+      }),
   },
 ];
 
