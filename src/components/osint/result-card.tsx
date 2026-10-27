@@ -175,7 +175,7 @@ export function ResultCard({
               rel="noopener noreferrer"
               className="mt-2 block overflow-hidden rounded-md border bg-secondary/40 w-fit max-w-full"
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
+              { }
               <img
                 src={item.favicon}
                 alt={item.name}

@@ -11,7 +11,17 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
+import { TgLoginDialog } from "@/components/osint/tg-login-dialog";
 import {
   Loader2,
   Play,
@@ -22,7 +32,11 @@ import {
   RefreshCw,
   DatabaseZap,
   ShieldCheck,
+  ShieldAlert,
   AlertTriangle,
+  LogIn,
+  ListPlus,
+  Radar,
 } from "lucide-react";
 
 // ---- Server javob shakllari (lib/tg-hub bilan mos — type-only) ----
@@ -56,6 +70,14 @@ interface TgStatus {
   connected: boolean;
   connecting: boolean;
   connectError: string | null;
+  authDead: boolean;
+  login: {
+    stage: "idle" | "code_sent" | "password_needed" | "success" | "error";
+    phoneMasked: string | null;
+    error: string | null;
+    floodWaitSec: number;
+    message: string | null;
+  } | null;
   scan: {
     running: boolean;
     stopping: boolean;
@@ -99,6 +121,10 @@ export function TgHubPanel() {
   const [nameQuery, setNameQuery] = useState("");
   const [addInput, setAddInput] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchInput, setBatchInput] = useState("");
+  const [batchResult, setBatchResult] = useState<string[] | null>(null);
   const logBoxRef = useRef<HTMLDivElement>(null);
 
   const fetchStatus = useCallback(
@@ -162,9 +188,26 @@ export function TgHubPanel() {
   const pct = scan && scan.total > 0 ? Math.round((scan.done / scan.total) * 100) : 0;
   const showScan = scan && (scan.startedAt !== null || running);
   const displayHits = running || showScan ? (scan?.hits ?? []) : (data?.lastScan?.hits ?? []);
+  const sessionDead = data ? (!data.session || data.authDead) : false;
 
   const startDisabled =
     running || busy === "start-scan" || (!username.trim() && !userId.trim() && !nameQuery.trim());
+
+  const openLogin = () => setLoginOpen(true);
+
+  const guardSession = (): boolean => {
+    if (!data?.session) {
+      toast({ title: "Login kerak", description: "Avval Telegram sessiyasiga kiring — Login tugmasini bosing.", variant: "destructive" });
+      openLogin();
+      return false;
+    }
+    if (data.authDead) {
+      toast({ title: "Sessiya yaroqsiz", description: "Sessiya Telegram tomonidan bekor qilingan — qayta login qiling.", variant: "destructive" });
+      openLogin();
+      return false;
+    }
+    return true;
+  };
 
   return (
     <Card className="p-4 sm:p-5">
@@ -172,21 +215,26 @@ export function TgHubPanel() {
         <Send className="w-4 h-4 text-primary" />
         <h2 className="font-semibold text-sm sm:text-base">Telegram guruh/kanal skaneri</h2>
         <div className="ml-auto flex items-center gap-1.5">
-          {data?.session ? (
-            data.connected ? (
-              <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/40" variant="outline">
-                <ShieldCheck className="w-3 h-3 mr-1" /> Ulangan
-              </Badge>
-            ) : (
-              <Badge variant="outline" className="text-muted-foreground">
-                {data.connecting ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : null} Ulanmagan
-              </Badge>
-            )
-          ) : (
+          {!data?.session ? (
             <Badge variant="outline" className="text-amber-400 border-amber-500/40">
-              <AlertTriangle className="w-3 h-3 mr-1" /> Sessiya yo&apos;q
+              <AlertTriangle className="w-3 h-3 mr-1" /> Login kerak
+            </Badge>
+          ) : data.authDead ? (
+            <Badge variant="outline" className="text-red-400 border-red-500/40">
+              <ShieldAlert className="w-3 h-3 mr-1" /> Sessiya o&apos;chgan
+            </Badge>
+          ) : data.connected ? (
+            <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/40" variant="outline">
+              <ShieldCheck className="w-3 h-3 mr-1" /> Ulangan
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="text-muted-foreground">
+              {data.connecting ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : null} Ulanmagan
             </Badge>
           )}
+          <Button size="sm" variant={sessionDead ? "default" : "outline"} className="h-7 text-xs" onClick={openLogin}>
+            <LogIn className="w-3.5 h-3.5 mr-1" /> Login
+          </Button>
           {data?.presets.imported && (
             <Badge variant="secondary" className="text-[10px]">
               {data.presets.total} guruh ro&apos;yxatda
@@ -214,6 +262,25 @@ export function TgHubPanel() {
 
         {/* ===== SKAN ===== */}
         <TabsContent value="skan" className="mt-3 space-y-3">
+          {data && !data.session && (
+            <Alert className="py-2 border-amber-500/40">
+              <AlertTriangle className="w-4 h-4 text-amber-400" />
+              <AlertDescription className="text-xs">
+                Sessiya mavjud emas — skan ishlashi uchun bir martalik login kerak.{" "}
+                <button className="underline font-medium" onClick={openLogin}>Login oynasini ochish</button>
+              </AlertDescription>
+            </Alert>
+          )}
+          {data?.authDead && (
+            <Alert variant="destructive" className="py-2">
+              <ShieldAlert className="w-4 h-4" />
+              <AlertDescription className="text-xs">
+                Sessiya Telegram tomonidan bekor qilingan (hisobdan chiqarilgan yoki o&apos;chirilgan).
+                Qayta login qiling — kod yana Telegram&apos;ga keladi.{" "}
+                <button className="underline font-medium" onClick={openLogin}>Qayta login</button>
+              </AlertDescription>
+            </Alert>
+          )}
           <div className="grid sm:grid-cols-3 gap-2">
             <div>
               <label className="text-[11px] text-muted-foreground" htmlFor="tg-username">Username</label>
@@ -256,6 +323,7 @@ export function TgHubPanel() {
               size="sm"
               disabled={startDisabled}
               onClick={() => {
+                if (!guardSession()) return;
                 if (data && !data.connected && data.connectError) {
                   toast({ title: "Ulanish xatosi", description: data.connectError, variant: "destructive" });
                   return;
@@ -387,12 +455,24 @@ export function TgHubPanel() {
               className="h-9"
               disabled={!addInput.trim() || busy === "add-group"}
               onClick={async () => {
+                if (!guardSession()) return;
                 const ok = await act("add-group", { username: addInput.trim() });
                 if (ok) setAddInput("");
               }}
             >
               {busy === "add-group" ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Plus className="w-4 h-4 mr-1" />}
               Qo&apos;shish
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-9"
+              onClick={() => {
+                setBatchResult(null);
+                setBatchOpen(true);
+              }}
+            >
+              <ListPlus className="w-4 h-4 mr-1" /> Ko&apos;p qo&apos;shish
             </Button>
             {data?.presets.presetFile && (
               <Button
@@ -407,9 +487,27 @@ export function TgHubPanel() {
                 ) : (
                   <DatabaseZap className="w-4 h-4 mr-1" />
                 )}
-                Preset 380 guruhni import
+                Preset import
               </Button>
             )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 text-xs"
+              disabled={sessionDead || busy === "resolve-peers"}
+              onClick={() => void act("resolve-peers")}
+            >
+              {busy === "resolve-peers" ? (
+                <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+              ) : (
+                <Radar className="w-3.5 h-3.5 mr-1" />
+              )}
+              Peerlarni Telegram&apos;dan yechish (20 ta)
+            </Button>
+            <span>— peer&apos;i yo&apos;q guruhlarni skan oldidan aniqlaydi</span>
           </div>
 
           <div className="max-h-96 overflow-y-auto rounded-md border divide-y">
@@ -459,6 +557,80 @@ export function TgHubPanel() {
           </p>
         </TabsContent>
       </Tabs>
+
+      {/* ===== LOGIN DIALOGI ===== */}
+      <TgLoginDialog
+        open={loginOpen}
+        onOpenChange={setLoginOpen}
+        onSuccess={() => {
+          toast({ title: "Kirish muvaffaqiyatli", description: "Sessiya saqlandi — skaner ishga tayyor.", variant: "default" });
+          void fetchStatus(true);
+        }}
+      />
+
+      {/* ===== KO'P QO'SHISH DIALOGI ===== */}
+      <Dialog open={batchOpen} onOpenChange={setBatchOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <ListPlus className="w-4 h-4 text-primary" /> Ko&apos;p guruh/kanal qo&apos;shish
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Har satrga bitta @username yoki t.me havolasi (maksimal 25 ta bir vaqtda). Har biri
+              Telegram&apos;da read-only tekshiriladi — hech qanday iz qolmaydi.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={batchInput}
+            onChange={(e) => setBatchInput(e.target.value)}
+            placeholder={"@guruh_username\nhttps://t.me/kanal_nomi\n@yana_biri"}
+            className="min-h-32 font-mono text-xs"
+          />
+          {batchResult && batchResult.length > 0 && (
+            <div className="max-h-40 overflow-y-auto rounded-md border bg-secondary/20 p-2 font-mono text-[11px] space-y-0.5">
+              {batchResult.map((l, i) => (
+                <div key={i} className="whitespace-pre-wrap break-all">{l}</div>
+              ))}
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setBatchOpen(false)} disabled={busy === "add-groups"}>
+              Yopish
+            </Button>
+            <Button
+              size="sm"
+              disabled={!batchInput.trim() || busy === "add-groups" || sessionDead}
+              onClick={async () => {
+                if (!guardSession()) return;
+                const list = batchInput.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+                setBusy("add-groups");
+                try {
+                  const res = await fetch("/api/tg-hub", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "add-groups", usernames: list }),
+                  });
+                  const j = (await res.json()) as { ok: boolean; message?: string; details?: string[] };
+                  setBatchResult(j.details ?? [j.message ?? "Noma'lum natija"]);
+                  toast({
+                    title: j.ok ? "Bajarildi" : "Xato",
+                    description: j.message ?? "",
+                    variant: j.ok ? "default" : "destructive",
+                  });
+                  void fetchStatus(true);
+                } catch {
+                  toast({ title: "Xato", description: "Server bilan aloqa yo'q", variant: "destructive" });
+                } finally {
+                  setBusy(null);
+                }
+              }}
+            >
+              {busy === "add-groups" ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Plus className="w-4 h-4 mr-1" />}
+              Hammasini qo&apos;shish
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

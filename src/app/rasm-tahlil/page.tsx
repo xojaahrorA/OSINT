@@ -359,7 +359,7 @@ export default function RasmTahlilPage() {
                 </CardHeader>
                 <CardContent>
                   {preview.kind === "image" ? (
-                    // eslint-disable-next-line @next/next/no-img-element
+                     
                     <img src={preview.src} alt="Tahlil qilinayotgan rasm" className="rounded-lg max-h-72 w-auto mx-auto" />
                   ) : (
                     <video src={preview.src} controls className="rounded-lg max-h-72 w-full" />

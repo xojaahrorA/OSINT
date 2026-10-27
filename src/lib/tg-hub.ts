@@ -27,7 +27,7 @@ const { TelegramClient: TgClientCtor } = nodeRequire("telegram") as {
 const { StringSession } = nodeRequire("telegram/sessions/index.js") as {
   StringSession: new (s: string) => unknown;
 };
-// eslint-disable-next-line
+ 
 const { Api } = nodeRequire("telegram") as any;
 
 type AnyClient = any;
@@ -130,10 +130,16 @@ function loadPeerCache(): Map<string, PeerInfo> {
   }
 }
 
+// Sessiya o'lgan holatlar (login talab qiladi): Telegram o'zi 401 qaytaradi
+const AUTH_DEAD_RE =
+  /(AUTH_KEY_UNREGISTERED|AUTH_KEY_INVALID|AUTH_KEY_DUPLICATED|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED)/i;
+
 class TgHub {
   private client: AnyClient = null;
   private connecting: Promise<void> | null = null;
   private peerCache = loadPeerCache();
+  // Sessiya Telegram tomonidan bekor qilinganmi? (qayta login kerak)
+  public authDead = false;
   private lastSnapshot: { target: TgTarget | null; startedAt: string | null; finishedAt: string | null; hits: TgHit[]; scanned: number } | null = null;
 
   public connectError: string | null = null;
@@ -214,7 +220,7 @@ class TgHub {
         if (!this.hasSession()) throw new Error("TG sessiya fayli topilmadi (scripts/.tg-session.json)");
         const sess = JSON.parse(fs.readFileSync(SESSION_FILE, "utf8"));
         // Klient instansiyasi HMR reload'da ham saqlansin
-        // eslint-disable-next-line
+         
         const g = globalThis as any;
         if (!g.__tgClient || !g.__tgClient.connected) {
           const client = new TgClientCtor(
@@ -238,6 +244,7 @@ class TgHub {
       } catch (e) {
         const msg = (e as Error)?.message ?? String(e);
         this.connectError = msg.slice(0, 200);
+        if (AUTH_DEAD_RE.test(msg)) this.authDead = true;
         throw e;
       } finally {
         this.connecting = null;
@@ -288,14 +295,22 @@ class TgHub {
   public async addGroup(rawUsername: string): Promise<{ ok: boolean; message: string }> {
     const u = normUsername(rawUsername);
     if (!u) return { ok: false, message: "Username noto'g'ri — @belgi bilan yoki t.me havolasi kiriting" };
+    // Peer yechish xatolari: sessiya yo'q / FLOOD / sessiya o'lgan — aniq o'zbekcha xabar
     let info: PeerInfo | null = null;
     try {
       info = await this.resolvePeer(u);
     } catch (e) {
-      const msg = ((e as Error)?.message ?? "").includes("FLOOD")
-        ? "Telegram FLOOD cheklovi — 1-2 daqiqa kutib turing"
-        : "Telegram bilan aloqa xatosi";
-      return { ok: false, message: msg };
+      const msg = ((e as Error)?.message ?? "").slice(0, 80);
+      if (/sessiya fayli topilmadi/i.test(msg)) {
+        return { ok: false, message: "Sessiya yo'q — yuqorida Login tugmasi orqali kiring" };
+      }
+      if (/FLOOD/i.test(msg)) {
+        return { ok: false, message: "Telegram FLOOD cheklovi — 1-2 daqiqa kutib turing" };
+      }
+      if (this.authDead || /AUTH_KEY_UNREGISTERED|SESSION_REVOKED/i.test(msg)) {
+        return { ok: false, message: "Sessiya yaroqsiz — qayta login qiling" };
+      }
+      return { ok: false, message: "Telegram bilan aloqa xatosi" };
     }
     if (!info) return { ok: false, message: `@${u} topilmadi — username mavjud emas yoki yashirilgan` };
     const religious = RELIGIOUS.test(info.title ?? u);
@@ -329,6 +344,43 @@ class TgHub {
   public async deleteGroups(ids: string[]): Promise<number> {
     const res = await db.telegramGroup.deleteMany({ where: { id: { in: ids } } });
     return res.count;
+  }
+
+  /** Ko'p guruhni bir vaqtda qo'shish (har biri contacts.Search bilan tekshiriladi) */
+  public async addManyGroups(
+    rawList: string[],
+    max = 25
+  ): Promise<{ added: number; updated: number; failed: number; religious: number; details: string[]; message: string }> {
+    const list = rawList.map((s) => s.trim()).filter(Boolean).slice(0, max);
+    if (list.length === 0) {
+      return { added: 0, updated: 0, failed: 0, religious: 0, details: [], message: "Ro'yxat bo'sh" };
+    }
+    let added = 0;
+    let updated = 0;
+    let failed = 0;
+    let religious = 0;
+    const details: string[] = [];
+    for (const raw of list) {
+      const r = await this.addGroup(raw);
+      if (r.ok) {
+        if (/DINIY/.test(r.message)) religious++;
+        else if (/qo'shildi/.test(r.message)) added++;
+        details.push(`✔ ${raw}: ${r.message}`);
+      } else {
+        failed++;
+        details.push(`✘ ${raw}: ${r.message}`);
+      }
+      await sleep(800);
+    }
+    return {
+      added,
+      updated,
+      failed,
+      religious,
+      details: details.slice(0, 40),
+      message: `${added} qo'shildi, ${religious} diniy (skanlanmaydi), ${failed} xato` +
+        (failed >= list.length && list.length > 0 ? " — ulanish/sessiyani tekshiring" : ""),
+    };
   }
 
   public async importPresets(): Promise<{ added: number; updated: number; religious: number }> {
@@ -539,8 +591,28 @@ class TgHub {
       }
       this.scan.current = `@${g.username}`;
       const info = this.peerCache.get(g.username);
-      const tgId = g.tgId ?? info?.id;
-      const hash = g.accessHash ?? info?.accessHash;
+      let tgId = g.tgId ?? info?.id;
+      let hash = g.accessHash ?? info?.accessHash;
+      if ((!tgId || !hash) && !this.authDead) {
+        // Peer yo'q — contacts.Search bilan yechib ko'ramiz (o'z-o'zidan davolash)
+        try {
+          const r = await this.resolvePeer(g.username);
+          if (r) {
+            tgId = r.id;
+            hash = r.accessHash;
+            await db.telegramGroup.update({
+              where: { id: g.id },
+              data: { tgId: r.id, accessHash: r.accessHash, members: r.members ?? g.members },
+            });
+            this.log(`@${g.username} — peer yechildi (${r.members ?? "?"} a'zo)`);
+          }
+        } catch (e) {
+          const msg = String((e as Error)?.message ?? (e as { errorMessage?: string })?.errorMessage ?? "");
+          if (/FLOOD_WAIT_(\d+)/.test(msg)) {
+            this.log(`@${g.username} — peer yechishda FLOOD, o'tkazildi`);
+          }
+        }
+      }
       if (!tgId || !hash) {
         await db.telegramGroup.update({
           where: { id: g.id },
@@ -624,7 +696,20 @@ class TgHub {
         });
         this.scan.scanned++;
       } catch (e) {
-        const msg = ((e as Error)?.message ?? "").slice(0, 60);
+        const rawMsg = String((e as Error)?.message ?? (e as { errorMessage?: string })?.errorMessage ?? "");
+        const msg = rawMsg.slice(0, 60);
+        if (AUTH_DEAD_RE.test(rawMsg)) {
+          // Sessiya o'lgan — davom etishning ma'nosi yo'q
+          this.authDead = true;
+          this.scan.errors++;
+          await db.telegramGroup.update({
+            where: { id: g.id },
+            data: { lastStatus: "error", lastScanAt: new Date() },
+          });
+          this.log("SESSIYA BEKOR QILINGAN — skan to'xtatildi, ilovada qayta login qiling");
+          this.scan.done++;
+          break;
+        }
         if (/FLOOD/.test(msg)) {
           this.scan.floodSkips++;
           await db.telegramGroup.update({
@@ -659,6 +744,90 @@ class TgHub {
     this.saveSnapshot();
   }
 
+  // ---------- Sessiya/klient boshqaruvi ----------
+  /** Login muvaffaqiyatli bo'lgach: eski klientni yopib, yangi sessiya bilan qayta ulanish */
+  public resetClient(): void {
+     
+    const g = globalThis as any;
+    try {
+      void g.__tgClient?.disconnect?.();
+    } catch {
+      /* ignore */
+    }
+    g.__tgClient = null;
+    this.client = null;
+    this.authDead = false;
+    this.connectError = null;
+  }
+
+  /** Ro'yxatdagi peer'i yo'q guruhlarni contacts.Search orqali yechish (read-only). FLOOD bo'lsa to'xtaydi. */
+  public async resolveMissingPeers(
+    max = 20
+  ): Promise<{ resolved: number; notFound: number; remaining: number; flood: boolean; message: string }> {
+    if (this.scan.running) {
+      return { resolved: 0, notFound: 0, remaining: 0, flood: false, message: "Skan ishlab turibdi — tugagach urinib ko'ring" };
+    }
+    let client: AnyClient;
+    try {
+      client = await this.ensureClient();
+    } catch (e) {
+      return {
+        resolved: 0,
+        notFound: 0,
+        remaining: 0,
+        flood: false,
+        message: `Ulanish xatosi: ${((e as Error)?.message ?? "").slice(0, 100)}`,
+      };
+    }
+    const pending = await db.telegramGroup.findMany({
+      where: { religious: false, OR: [{ tgId: null }, { accessHash: null }] },
+      orderBy: { members: "desc" },
+      take: max,
+    });
+    let resolved = 0;
+    let notFound = 0;
+    let flood = false;
+    for (const g of pending) {
+      try {
+        const info = await this.resolvePeer(g.username);
+        if (info) {
+          await db.telegramGroup.update({
+            where: { id: g.id },
+            data: { tgId: info.id, accessHash: info.accessHash, members: info.members ?? g.members },
+          });
+          resolved++;
+        } else {
+          notFound++;
+          await db.telegramGroup.update({
+            where: { id: g.id },
+            data: { lastStatus: "skipped", lastScanAt: new Date() },
+          });
+        }
+      } catch (e) {
+        const msg = String((e as Error)?.message ?? (e as { errorMessage?: string })?.errorMessage ?? "");
+        if (AUTH_DEAD_RE.test(msg)) {
+          this.authDead = true;
+          flood = false;
+          break;
+        }
+        if (/FLOOD_WAIT_(\d+)/.test(msg)) {
+          flood = true;
+          break;
+        }
+        notFound++;
+      }
+      await sleep(1500);
+    }
+    const remaining = await db.telegramGroup.count({
+      where: { religious: false, OR: [{ tgId: null }, { accessHash: null }] },
+    });
+    let message = `${resolved} ta peer yechildi, ${notFound} ta topilmadi`;
+    if (this.authDead) message = "Sessiya bekor qilingan — qayta login qiling";
+    else if (flood) message += " — FLOOD cheklovi, keyinroq davom ettiring";
+    void client;
+    return { resolved, notFound, remaining, flood, message };
+  }
+
   // ---------- Status (poll uchun — ulanishni TRIGGER QILMAYDI) ----------
   public status() {
     const { scan } = this;
@@ -667,6 +836,7 @@ class TgHub {
       connected: this.isConnected(),
       connecting: this.isConnecting(),
       connectError: this.connectError,
+      authDead: this.authDead,
       scan: {
         running: scan.running,
         stopping: scan.stopping,
@@ -700,8 +870,8 @@ class TgHub {
 // Global singleton (HMR'da ham saqlanadi). Kod o'zgarsa versiya ko'tariladi —
 // eski instansiya (eski kod bilan) almashtiriladi, lekin ulangan klient
 // globalThis.__tgClient'da qoladi va qayta ishlatiladi.
-const TG_HUB_VERSION = 5;
-// eslint-disable-next-line
+const TG_HUB_VERSION = 6;
+ 
 const g = globalThis as any;
 if (!g.__tgHub || g.__tgHubVersion !== TG_HUB_VERSION) {
   g.__tgHub = new TgHub();
