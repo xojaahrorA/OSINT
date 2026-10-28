@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
     groups,
     presets,
     login,
-    build: 7,
+    build: 8,
     storedCreds: stored ? { apiId: stored.apiId, apiHash: stored.apiHash } : null,
   });
 }
@@ -78,6 +78,11 @@ export async function POST(req: NextRequest) {
       case "login-cancel": {
         const r = await tgLogin.cancel();
         return NextResponse.json(r);
+      }
+      // ---------- GLOBAL (OCHIQ CHATLAR) ----------
+      case "global-search": {
+        const r = await hub.globalSearch(body.target ?? {});
+        return NextResponse.json(r, { status: r.ok ? 200 : (r.message && /Sessiya|Login|maqsad|ishlab turibdi/.test(r.message) ? 200 : 500) });
       }
       // ---------- SKAN ----------
       case "start-scan": {

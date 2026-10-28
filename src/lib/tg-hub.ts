@@ -44,6 +44,15 @@ export interface TgSample {
   sender?: string;
 }
 
+// Topilgan xabarning to'liq ko'rinishi — "nima deb yozgan"ini ko'rsatish uchun
+export interface TgMsg {
+  id: number;
+  date: string; // "YYYY-MM-DD HH:mm"
+  text: string;
+  link?: string | null; // t.me havolasi
+  fromUserId?: string; // kim yozgan (maqsad ID bilan solishtiriladi)
+}
+
 export interface TgHit {
   group: string; // @username
   title: string;
@@ -52,6 +61,41 @@ export interface TgHit {
   type: "mention" | "ism" | "from_id";
   count: number;
   samples: TgSample[];
+  msgs?: TgMsg[]; // xabarlar ro'yxati (havola bilan)
+}
+
+// Global qidiruv (ochiq/public chatlar) natijasi — bitta xabar
+export interface TgGlobalMsg {
+  chatTitle: string;
+  chatUsername: string | null;
+  chatId: string | null;
+  msgId: number;
+  date: string;
+  text: string;
+  senderUserId: string | null;
+  senderName: string | null;
+  authoredByTarget: boolean; // maqsadning o'zi yozgan
+  link: string | null;
+}
+
+// Ismiga o'xshash ochiq chat (contacts.Search orqali)
+export interface TgNamedChat {
+  title: string;
+  username: string | null;
+  kind: string;
+  members: number;
+  link: string | null;
+}
+
+export interface TgGlobalResult {
+  ok: boolean;
+  message?: string;
+  queries: { q: string; count: number; error?: string }[];
+  found: TgGlobalMsg[];
+  chatsNamedLike: TgNamedChat[];
+  religiousSkipped: number;
+  targetId: string | null;
+  targetUsername: string | null;
 }
 
 export interface TgScanState {
@@ -91,6 +135,19 @@ export interface TgGroupRow {
 
 // Diniy kontent filtri — bu guruhlar TEGILMAYDI
 const RELIGIOUS = /(islom|quron|qur'on|namoz|musulmon|diniy|masjid|hadis|sunna|ramazon|haj|umra|imom|ummah|alohid|yaqin kuni|zikr|duo)/i;
+
+// Maqsad konstantalari — oldingi read-only profil tekshiruvidan olingan.
+// accessHash shu hisob sessiyasiga bog'liq: boshqa hisobda kirilsa tekshiruv
+// xato qaytaradi va qidiruv matn bo'yicha davom etadi (hech qachon yiqilmaydi).
+const TARGET_FALLBACK = {
+  userId: "8731535304",
+  accessHash: "-6224497623040441778",
+};
+
+// Bitta guruhda nechta xabargacha to'liq yig'amiz (paginatsiya chegarasi)
+const FROM_ID_MAX = 600;
+const QUERY_MAX = 200;
+const GLOBAL_MAX = 200;
 
 const ROOT = process.cwd();
 const SESSION_FILE = path.join(ROOT, "scripts", ".tg-session.json");
@@ -486,43 +543,428 @@ class TgHub {
     }
   }
 
-  private async searchOne(
-    peer: unknown,
-    q: string,
-    fromId: unknown | null,
-    limit = 100
-  ): Promise<any> {
-    const client = await this.ensureClient();
-    return client.invoke(
-      new Api.messages.Search({
-        peer,
-        q,
-        fromId: fromId ?? undefined,
-        filter: new Api.InputMessagesFilterEmpty(),
-        minDate: 0,
-        maxDate: 0,
-        offsetRate: 0,
-        offsetId: 0,
-        addOffset: 0,
-        limit,
-        maxId: 0,
-        minId: 0,
-        hash: BigInt(0),
-      })
-    );
+  private errText(e: unknown): string {
+    return String((e as Error)?.message ?? (e as { errorMessage?: string })?.errorMessage ?? e ?? "");
   }
 
-  private samplesFrom(res: { messages?: unknown[]; users?: unknown[] }): TgSample[] {
+  private samplesFrom(raw: any[]): TgSample[] {
     const out: TgSample[] = [];
-    const msgs = (res.messages ?? []).slice(0, 3);
-    for (const m of msgs as any[]) {
+    for (const m of (raw ?? []).slice(0, 3)) {
       out.push({
         date: m?.date ? new Date(Number(m.date) * 1000).toISOString().slice(0, 10) : undefined,
         text: (m?.message ?? "").slice(0, 140) || undefined,
-        sender: m?.fromId?.userId ? String(m.fromId.userId) : undefined,
+        sender: m?.fromId?.className === "PeerUser" ? String(m.fromId.userId) : undefined,
       });
     }
     return out;
+  }
+
+  private msgLink(username: string, internalId: string | null, msgId: number): string | null {
+    const u = (username ?? "").trim();
+    if (u) return `https://t.me/${u}/${msgId}`;
+    const id = String(internalId ?? "").replace(/^-100/, "").replace(/^-/, "");
+    return id ? `https://t.me/c/${id}/${msgId}` : null;
+  }
+
+  private buildMsgs(raw: any[], username: string, internalId: string | null, cap: number): TgMsg[] {
+    const out: TgMsg[] = [];
+    for (const m of raw ?? []) {
+      if (!m || typeof m.id !== "number") continue;
+      const text = (typeof m.message === "string" ? m.message : "").trim();
+      out.push({
+        id: m.id,
+        date: m.date
+          ? new Date(Number(m.date) * 1000).toISOString().slice(0, 16).replace("T", " ")
+          : "",
+        text: (text || "(media — matn yo'q)").slice(0, 300),
+        link: this.msgLink(username, internalId, m.id),
+        fromUserId: m.fromId?.className === "PeerUser" ? String(m.fromId.userId) : undefined,
+      });
+      if (out.length >= cap) break;
+    }
+    return out;
+  }
+
+  /** Bitta chatda qidiruvni paginatsiya bilan to'liq olib boradi (FLOOD himoyasi ichida) */
+  private async searchAll(
+    peer: unknown,
+    q: string,
+    fromId: unknown | null,
+    max: number,
+    logCtx: (s: string) => void
+  ): Promise<{ count: number; messages: any[] }> {
+    const client = await this.ensureClient();
+    const pages = Math.max(1, Math.ceil(max / 100));
+    const all: any[] = [];
+    let total = 0;
+    let offsetId = 0;
+    for (let p = 0; p < pages; p++) {
+      let res: any = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          res = await client.invoke(
+            new Api.messages.Search({
+              peer: peer as never,
+              q,
+              fromId: fromId ?? undefined,
+              filter: new Api.InputMessagesFilterEmpty(),
+              minDate: 0,
+              maxDate: 0,
+              offsetRate: 0,
+              offsetId,
+              addOffset: 0,
+              limit: 100,
+              maxId: 0,
+              minId: 0,
+              hash: BigInt(0),
+            })
+          );
+          break;
+        } catch (e) {
+          const msg = this.errText(e);
+          const m = /FLOOD_WAIT_(\d+)/.exec(msg);
+          if (m) {
+            const wait = Math.min(Number(m[1]) + 5, 120);
+            logCtx(`FLOOD ${m[1]}s → ${wait}s kutish`);
+            await sleep(wait * 1000);
+          } else if (/PEER_ID_INVALID|CHANNEL_INVALID/i.test(msg) && offsetId === 0) {
+            // Peer turi mos kelmadi — oddiy (basic) guruh bo'lishi mumkin: chat peer bilan urinamiz
+            const chPeer = this.basicChatPeer(peer);
+            if (chPeer) {
+              try {
+                res = await client.invoke(
+                  new Api.messages.Search({
+                    peer: chPeer as never,
+                    q,
+                    fromId: fromId ?? undefined,
+                    filter: new Api.InputMessagesFilterEmpty(),
+                    minDate: 0,
+                    maxDate: 0,
+                    offsetRate: 0,
+                    offsetId,
+                    addOffset: 0,
+                    limit: 100,
+                    maxId: 0,
+                    minId: 0,
+                    hash: BigInt(0),
+                  })
+                );
+                break;
+              } catch (e2) {
+                if (/FLOOD_WAIT_(\d+)/.test(this.errText(e2))) throw e2;
+                throw e;
+              }
+            } else throw e;
+          } else {
+            throw e;
+          }
+        }
+      }
+      if (!res) throw new Error("FLOOD_RETRY_FAILED");
+      const msgs: any[] = res.messages ?? [];
+      total = Number(res.count ?? total);
+      if (msgs.length === 0) break;
+      all.push(...msgs);
+      if (all.length >= max || (total > 0 && all.length >= total)) break;
+      const minId = Math.min(...msgs.map((x) => Number(x.id)));
+      if (!minId || minId <= 0 || minId === offsetId) break;
+      offsetId = minId;
+      await sleep(600);
+    }
+    return { count: total || all.length, messages: all };
+  }
+
+  private basicChatPeer(original: unknown): unknown | null {
+    // InputPeerChannel'dan InputPeerChat'ga o'tish — faqat ID orqali (basic guruh hash so'ramaydi)
+    const chId = (original as { channelId?: unknown })?.channelId;
+    if (chId === undefined) return null;
+    const id = String(chId).replace(/^-100/, "").replace(/^-/, "");
+    if (!id || id === "0") return null;
+    return new Api.InputPeerChat({ chatId: BigInt(id) });
+  }
+
+  /**
+   * Maqsad profilini aniqlash — from_id qidiruv uchun ID + accessHash shart.
+   * 1) contacts.Search (username), 2) ma'lum ID+hash (users.getUsers bilan tekshiriladi),
+   * 3) shu hisob dialoglari. Hech biri topmasa — qidiruv matn bo'yicha davom etadi.
+   */
+  private async resolveTargetIdentity(t: TgTarget): Promise<boolean> {
+    let client: AnyClient;
+    try {
+      client = await this.ensureClient();
+    } catch (e) {
+      this.log(`ULANISH XATOSI: ${this.errText(e).slice(0, 120)}`);
+      return false;
+    }
+    const setProfile = async (u: any, source: string): Promise<boolean> => {
+      const id = String(u.id);
+      const accessHash = u.accessHash?.toString() ?? null;
+      if (!accessHash || accessHash === "0") {
+        this.log(`Profil topildi (id=${id}) lekin accessHash yo'q — from_id o'tkaziladi`);
+        return false;
+      }
+      this.scan.targetProfile = {
+        id,
+        username: u.username ?? null,
+        name: `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim(),
+        bio: null,
+        accessHash,
+      };
+      try {
+        const full = await client.invoke(
+          new Api.users.GetFullUser({
+            id: new Api.InputUser({ userId: BigInt(id), accessHash: BigInt(accessHash) }),
+          })
+        );
+        this.scan.targetProfile.bio = full?.fullUser?.about ?? null;
+      } catch {
+        /* bio bo'lmasa ham davom */
+      }
+      this.log(
+        `Profil topildi (${source}): id=${id}, ism="${this.scan.targetProfile.name}", bio="${(this.scan.targetProfile.bio ?? "yo'q").slice(0, 60)}"`
+      );
+      return true;
+    };
+
+    // 1) Username orqali
+    if (t.username) {
+      this.log(`Profil tekshirilmoqda: @${t.username}`);
+      try {
+        const res = await client.invoke(new Api.contacts.Search({ q: t.username, limit: 20 }));
+        const u = (res.users ?? []).find((x: any) => (x.username ?? "").toLowerCase() === t.username);
+        if (u && (await setProfile(u, "contacts.Search"))) return true;
+      } catch (e) {
+        this.log(`contacts.Search o'tkazildi: ${this.errText(e).slice(0, 60)}`);
+      }
+      await sleep(1200);
+    }
+
+    // 2) Ma'lum ID + hash (shu hisobda ishlashi tekshiriladi — read-only)
+    if (t.userId) {
+      const known = t.userId === TARGET_FALLBACK.userId ? TARGET_FALLBACK : null;
+      if (known) {
+        try {
+          const users = (await client.invoke(
+            new Api.users.GetUsers({
+              id: [new Api.InputUser({ userId: BigInt(known.userId), accessHash: BigInt(known.accessHash) })],
+            })
+          )) as any[];
+          const u = (users ?? [])[0];
+          if (u && String(u.id) === t.userId && !u.min) {
+            if (await setProfile(u, "ID+hash tekshiruvi")) return true;
+          }
+        } catch (e) {
+          this.log(`ID+hash tekshiruvi o'tmadi (${this.errText(e).slice(0, 50)}) — boshqa yo'l bilan izlanadi`);
+        }
+        await sleep(800);
+      }
+    }
+
+    // 3) Shu hisob dialoglaridan izlash (agar maqsad bilan muloqot bo'lsa)
+    if (t.userId) {
+      try {
+        const dialogs = (await client.invoke(
+          new Api.messages.GetDialogs({
+            offsetDate: 0,
+            offsetId: 0,
+            offsetPeer: new Api.InputPeerEmpty(),
+            limit: 200,
+            hash: BigInt(0),
+          })
+        )) as any;
+        const u = (dialogs?.users ?? []).find((x: any) => String(x?.id) === t.userId);
+        if (u && (await setProfile(u, "dialoglar"))) return true;
+      } catch (e) {
+        this.log(`Dialog tekshiruvi o'tkazildi: ${this.errText(e).slice(0, 60)}`);
+      }
+    }
+
+    this.log("Profil aniqlanmadi — qidiruv @username/ism matni bo'yicha davom etadi");
+    return false;
+  }
+
+  /**
+   * GLOBAL qidiruv — saqlangan ro'yxatdan TASHQARI, butun Telegram ochiq (public)
+   * chatlarida: @username tilga olingan xabarlar, ism uchrashi va maqsadning
+   * o'zi yozgan xabarlar. messages.searchGlobal — faqat public kontent.
+   */
+  public async globalSearch(target: TgTarget): Promise<TgGlobalResult> {
+    const empty: TgGlobalResult = {
+      ok: false,
+      queries: [],
+      found: [],
+      chatsNamedLike: [],
+      religiousSkipped: 0,
+      targetId: null,
+      targetUsername: null,
+    };
+    if (this.scan.running) return { ...empty, message: "Skan ishlab turibdi — tugagach urinib ko'ring" };
+    if (!this.hasSession()) return { ...empty, message: "Sessiya yo'q — avval Login qiling" };
+
+    const t: TgTarget = {
+      username: target.username ? normUsername(target.username) ?? undefined : undefined,
+      userId: target.userId?.replace(/\D/g, "") || undefined,
+      nameQuery: target.nameQuery?.trim() || undefined,
+    };
+    if (!t.username && !t.userId && !t.nameQuery)
+      return { ...empty, message: "Kamida bitta maqsad kiriting: username, userId yoki ism" };
+
+    let client: AnyClient;
+    try {
+      client = await this.ensureClient();
+    } catch (e) {
+      const msg = this.errText(e);
+      if (AUTH_DEAD_RE.test(msg)) this.authDead = true;
+      return { ...empty, message: /sessiya fayli topilmadi/i.test(msg) ? "Sessiya yo'q — avval Login qiling" : `Ulanish xatosi: ${msg.slice(0, 90)}` };
+    }
+
+    // Maqsad ID aniqlash — "uning o'zi yozgan"ini ajratish uchun
+    let targetId: string | null = t.userId ?? null;
+    let targetUsername: string | null = t.username ?? null;
+    if (!targetId && t.username) {
+      try {
+        const res = await client.invoke(new Api.contacts.Search({ q: t.username, limit: 20 }));
+        const u = (res.users ?? []).find((x: any) => (x.username ?? "").toLowerCase() === t.username);
+        if (u) {
+          targetId = String(u.id);
+          if (!targetUsername) targetUsername = u.username ?? null;
+        }
+      } catch {
+        /* ID aniqlanmasa ham matn qidiruvi davom */
+      }
+      await sleep(800);
+    }
+
+    // So'rov variantlari
+    const qs = new Set<string>();
+    if (t.username) {
+      qs.add(`@${t.username}`);
+      qs.add(t.username);
+    }
+    if (t.nameQuery) qs.add(t.nameQuery);
+    const queries = [...qs].slice(0, 4);
+
+    const found: TgGlobalMsg[] = [];
+    const seen = new Set<string>();
+    let religiousSkipped = 0;
+    const queriesInfo: { q: string; count: number; error?: string }[] = [];
+
+    for (const q of queries) {
+      try {
+        const res: any = await client.invoke(
+          new Api.messages.SearchGlobal({
+            q,
+            filter: new Api.InputMessagesFilterEmpty(),
+            minDate: 0,
+            maxDate: 0,
+            offsetRate: 0,
+            offsetPeer: new Api.InputPeerEmpty(),
+            offsetId: 0,
+            limit: 100,
+          })
+        );
+        const msgs: any[] = res.messages ?? [];
+        const users: any[] = res.users ?? [];
+        const chats: any[] = res.chats ?? [];
+        queriesInfo.push({ q, count: msgs.length });
+        for (const m of msgs) {
+          let chatTitle = "";
+          let chatUsername: string | null = null;
+          let internalId: string | null = null;
+          const peerId = m.peerId;
+          if (peerId?.className === "PeerChannel") {
+            const ch = chats.find((c: any) => String(c.id) === String(peerId.channelId));
+            chatTitle = ch?.title ?? "kanal/guruh";
+            chatUsername = ch?.username ?? null;
+            internalId = String(peerId.channelId);
+          } else if (peerId?.className === "PeerChat") {
+            const ch = chats.find((c: any) => String(c.id) === String(peerId.chatId));
+            chatTitle = ch?.title ?? "guruh";
+            internalId = String(peerId.chatId);
+          } else continue;
+          // Diniy filtr — bu chatlardan natija KO'RSATILMAYDI
+          if (RELIGIOUS.test(chatTitle) || RELIGIOUS.test(chatUsername ?? "")) {
+            religiousSkipped++;
+            continue;
+          }
+          const key = `${chatUsername ?? internalId}-${m.id}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const sender = m.fromId?.className === "PeerUser" ? String(m.fromId.userId) : null;
+          const senderUser = users.find((u: any) => String(u.id) === sender);
+          const text = (typeof m.message === "string" ? m.message : "").trim();
+          found.push({
+            chatTitle,
+            chatUsername,
+            chatId: internalId,
+            msgId: m.id,
+            date: m.date ? new Date(Number(m.date) * 1000).toISOString().slice(0, 16).replace("T", " ") : "",
+            text: (text || "(media — matn yo'q)").slice(0, 300),
+            senderUserId: sender,
+            senderName: senderUser
+              ? `${senderUser.firstName ?? ""}${senderUser.lastName ? " " + senderUser.lastName : ""}`.trim() || null
+              : null,
+            authoredByTarget: !!targetId && sender === targetId,
+            link: chatUsername ? `https://t.me/${chatUsername}/${m.id}` : this.msgLink("", internalId, m.id),
+          });
+        }
+      } catch (e) {
+        const msg = this.errText(e);
+        if (AUTH_DEAD_RE.test(msg)) {
+          this.authDead = true;
+          return { ...empty, message: "Sessiya bekor qilingan — qayta login qiling" };
+        }
+        const m = /FLOOD_WAIT_(\d+)/.exec(msg);
+        if (m) {
+          const wait = Math.min(Number(m[1]) + 5, 60);
+          queriesInfo.push({ q, count: 0, error: `FLOOD ${m[1]}s` });
+          await sleep(wait * 1000);
+        } else {
+          queriesInfo.push({ q, count: 0, error: msg.slice(0, 60) });
+        }
+      }
+      await sleep(900);
+    }
+
+    // Ismiga o'xshash ochiq chatlar (contacts.Search — read-only)
+    const chatsNamedLike: TgNamedChat[] = [];
+    const seenChats = new Set<string>();
+    for (const q of [t.username, t.nameQuery].filter(Boolean).slice(0, 2)) {
+      try {
+        const res = await client.invoke(new Api.contacts.Search({ q: q as string, limit: 20 }));
+        for (const ch of res.chats ?? []) {
+          const u = ch.username ?? "";
+          const key = u || `id:${ch.id}`;
+          if (seenChats.has(key)) continue;
+          seenChats.add(key);
+          if (RELIGIOUS.test(ch.title ?? "") || RELIGIOUS.test(u)) {
+            religiousSkipped++;
+            continue;
+          }
+          chatsNamedLike.push({
+            title: ch.title ?? "",
+            username: u || null,
+            kind: ch.broadcast === true ? "channel" : "group",
+            members: ch.participantsCount ?? 0,
+            link: u ? `https://t.me/${u}` : null,
+          });
+        }
+      } catch {
+        /* chat nomi qidiruvi muhim emas — davom */
+      }
+      await sleep(700);
+    }
+
+    found.sort((a, b) => (a.date < b.date ? 1 : -1));
+    return {
+      ok: true,
+      queries: queriesInfo,
+      found: found.slice(0, GLOBAL_MAX),
+      chatsNamedLike: chatsNamedLike.slice(0, 30),
+      religiousSkipped,
+      targetId,
+      targetUsername,
+    };
   }
 
   private async runScan(t: TgTarget) {
@@ -536,45 +978,9 @@ class TgHub {
       return;
     }
 
-    // 1) Profil tekshiruv — username bo'lsa: aniq ID + accessHash olamiz (from_id uchun)
-    if (t.username) {
-      this.log(`Profil tekshirilmoqda: @${t.username}`);
-      try {
-        const client = await this.ensureClient();
-        const res = await client.invoke(new Api.contacts.Search({ q: t.username, limit: 20 }));
-        const u = (res.users ?? []).find((x: any) => (x.username ?? "").toLowerCase() === t.username);
-        if (u) {
-          this.scan.targetProfile = {
-            id: String(u.id),
-            username: u.username ?? null,
-            name: `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim(),
-            bio: null,
-            accessHash: u.accessHash?.toString() ?? "0",
-          };
-          try {
-            const full = await client.invoke(
-              new Api.users.GetFullUser({
-                id: new Api.InputUser({
-                  userId: BigInt(String(u.id)),
-                  accessHash: BigInt(u.accessHash?.toString() ?? "0"),
-                }),
-              })
-            );
-            this.scan.targetProfile.bio = full?.fullUser?.about ?? null;
-          } catch {
-            /* bio bo'lmasa ham davom */
-          }
-          this.log(
-            `Profil topildi: id=${this.scan.targetProfile.id}, ism="${this.scan.targetProfile.name}", bio="${(this.scan.targetProfile.bio ?? "yo'q").slice(0, 60)}"`
-          );
-        } else {
-          this.log("Profil contacts.Search'da topilmadi — faqat matn qidiruvi ishlaydi");
-        }
-      } catch (e) {
-        this.log(`Profil qidiruvi o'tkazib yuborildi: ${((e as Error)?.message ?? "").slice(0, 60)}`);
-      }
-      await sleep(1500);
-    }
+    // 1) Maqsad profilini aniqlash — from_id (o'zining yozgan xabarlari) uchun ID+hash kerak
+    await this.resolveTargetIdentity(t);
+    if (t.username || t.userId) await sleep(1000);
 
     // 2) Skan ro'yxati — diniy guruhlar O'TKAZILADI
     const groups = await db.telegramGroup.findMany({
@@ -626,27 +1032,9 @@ class TgHub {
       const peer = new Api.InputPeerChannel({ channelId: BigInt(tgId), accessHash: BigInt(hash) });
 
       let groupOk = true;
-      const doSearch = async (q: string, fromId: any): Promise<any> => {
-        for (let attempt = 0; attempt < 2; attempt++) {
-          try {
-            return await this.searchOne(peer, q, fromId);
-          } catch (e) {
-            const msg = String((e as Error)?.message ?? (e as { errorMessage?: string })?.errorMessage ?? "");
-            const m = /FLOOD_WAIT_(\d+)/.exec(msg);
-            if (m) {
-              const wait = Math.min(Number(m[1]) + 5, 120);
-              this.log(`@${g.username} — FLOOD ${m[1]}s → ${wait}s kutish`);
-              await sleep(wait * 1000);
-            } else {
-              throw e;
-            }
-          }
-        }
-        throw new Error("FLOOD_RETRY_FAILED");
-      };
 
-      const pushHit = (type: TgHit["type"], count: number, samples: TgSample[]) => {
-        if (count <= 0) return;
+      const pushHit = (type: TgHit["type"], count: number, samples: TgSample[], msgs?: TgMsg[]) => {
+        if (count <= 0 && (!msgs || msgs.length === 0)) return;
         this.scan.hits.push({
           group: `@${g.username}`,
           title: g.title,
@@ -655,39 +1043,50 @@ class TgHub {
           type,
           count,
           samples,
+          ...(msgs && msgs.length > 0 ? { msgs } : {}),
         });
         this.log(`  HIT [${type}] @${g.username} — ${count} ta xabar`);
         this.saveSnapshot();
       };
 
       try {
-        // a) mention — @username tilga olinganmi
+        const internalId = String(g.tgId ?? tgId);
+        // a) mention — @username tilga olinganmi (paginatsiya bilan)
         if (t.username) {
-          const res = await doSearch(`@${t.username}`, null);
-          pushHit("mention", res.count ?? res.messages?.length ?? 0, this.samplesFrom(res));
+          const { count, messages: raw } = await this.searchAll(peer, `@${t.username}`, null, QUERY_MAX, (s) =>
+            this.log(`@${g.username} — ${s}`)
+          );
+          pushHit("mention", count, this.samplesFrom(raw), this.buildMsgs(raw, g.username, internalId, 20));
           await sleep(700);
         }
-        // b) ism bo'yicha — matnda ism uchraydi (tekshiruv sender bilan)
+        // b) ism bo'yicha — matnda ism uchraydi (kim yozganini tekshiramiz)
         if (t.nameQuery) {
-          const res = await doSearch(t.nameQuery, null);
-          const cnt = res.count ?? res.messages?.length ?? 0;
-          const samples = this.samplesFrom(res);
-          // Senderlar target bilan mosmi?
-          if (cnt > 0 && t.userId) {
-            const senderMatch = (res.users ?? []).some((u: any) => String(u?.id) === t.userId);
-            if (senderMatch) this.log(`  ISM HIT + SENDER MOS @${g.username} — TEKSHIRUV`);
+          const { count, messages: raw } = await this.searchAll(peer, t.nameQuery, null, QUERY_MAX, (s) =>
+            this.log(`@${g.username} — ${s}`)
+          );
+          if (raw.length > 0 && t.userId) {
+            const selfWritten = raw.some(
+              (m) => m.fromId?.className === "PeerUser" && String(m.fromId.userId) === t.userId
+            );
+            if (selfWritten) this.log(`  @${g.username} — ism HIT va MAQSADNING O'ZI yozgan!`);
           }
-          pushHit("ism", cnt, samples);
+          pushHit("ism", count, this.samplesFrom(raw), this.buildMsgs(raw, g.username, internalId, 20));
           await sleep(700);
         }
-        // c) from_id — faqat real accessHash bo'lganda (hash=0 filtrni o'chirib qo'yadi!)
+        // c) MAQSADNING O'ZI YOZGAN XABARLAR — from_id bilan TO'LIQ paginatsiya (600 tagacha)
         if (t.userId && this.scan.targetProfile?.accessHash && this.scan.targetProfile.accessHash !== "0") {
           const fromId = new Api.InputPeerUser({
             userId: BigInt(this.scan.targetProfile.id),
             accessHash: BigInt(this.scan.targetProfile.accessHash),
           });
-          const res = await doSearch("", fromId);
-          pushHit("from_id", res.count ?? res.messages?.length ?? 0, this.samplesFrom(res));
+          const { count, messages: raw } = await this.searchAll(peer, "", fromId, FROM_ID_MAX, (s) =>
+            this.log(`@${g.username} — ${s}`)
+          );
+          if (raw.length > 0) {
+            const clipped = count > raw.length ? ` (${raw.length} tasi o'zbekcha ko'rsatildi)` : "";
+            this.log(`  @${g.username} — maqsad yozgan ${count} ta xabar topildi${clipped}`);
+          }
+          pushHit("from_id", count || raw.length, this.samplesFrom(raw), this.buildMsgs(raw, g.username, internalId, 40));
           await sleep(700);
         }
         await db.telegramGroup.update({
@@ -870,7 +1269,7 @@ class TgHub {
 // Global singleton (HMR'da ham saqlanadi). Kod o'zgarsa versiya ko'tariladi —
 // eski instansiya (eski kod bilan) almashtiriladi, lekin ulangan klient
 // globalThis.__tgClient'da qoladi va qayta ishlatiladi.
-const TG_HUB_VERSION = 6;
+const TG_HUB_VERSION = 7;
  
 const g = globalThis as any;
 if (!g.__tgHub || g.__tgHubVersion !== TG_HUB_VERSION) {

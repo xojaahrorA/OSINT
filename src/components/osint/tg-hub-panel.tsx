@@ -37,6 +37,8 @@ import {
   LogIn,
   ListPlus,
   Radar,
+  Globe,
+  ExternalLink,
 } from "lucide-react";
 
 // ---- Server javob shakllari (lib/tg-hub bilan mos — type-only) ----
@@ -44,6 +46,13 @@ interface TgSample {
   date?: string;
   text?: string;
   sender?: string;
+}
+interface TgMsg {
+  id: number;
+  date: string;
+  text: string;
+  link?: string | null;
+  fromUserId?: string;
 }
 interface TgHit {
   group: string;
@@ -53,6 +62,36 @@ interface TgHit {
   type: "mention" | "ism" | "from_id";
   count: number;
   samples: TgSample[];
+  msgs?: TgMsg[];
+}
+interface TgGlobalMsg {
+  chatTitle: string;
+  chatUsername: string | null;
+  chatId: string | null;
+  msgId: number;
+  date: string;
+  text: string;
+  senderUserId: string | null;
+  senderName: string | null;
+  authoredByTarget: boolean;
+  link: string | null;
+}
+interface TgNamedChat {
+  title: string;
+  username: string | null;
+  kind: string;
+  members: number;
+  link: string | null;
+}
+interface TgGlobalResult {
+  ok: boolean;
+  message?: string;
+  queries: { q: string; count: number; error?: string }[];
+  found: TgGlobalMsg[];
+  chatsNamedLike: TgNamedChat[];
+  religiousSkipped: number;
+  targetId: string | null;
+  targetUsername: string | null;
 }
 interface TgGroupRow {
   id: string;
@@ -102,7 +141,7 @@ interface TgStatus {
 const HIT_TYPE_UZ: Record<string, string> = {
   mention: "@tilga olingan",
   ism: "ism matnda",
-  from_id: "uning xabari (ID)",
+  from_id: "uning yozgan xabarlari",
 };
 
 const STATUS_UZ: Record<string, string> = {
@@ -131,6 +170,7 @@ export function TgHubPanel({ presetTarget }: { presetTarget?: TgPresetTarget | n
   const [batchOpen, setBatchOpen] = useState(false);
   const [batchInput, setBatchInput] = useState("");
   const [batchResult, setBatchResult] = useState<string[] | null>(null);
+  const [globalResult, setGlobalResult] = useState<TgGlobalResult | null>(null);
   const logBoxRef = useRef<HTMLDivElement>(null);
 
   // Asosiy qidiruvdan o'tkazilgan maqsad — panelda maydonlarni avtomatik to'ldiramiz
@@ -209,6 +249,8 @@ export function TgHubPanel({ presetTarget }: { presetTarget?: TgPresetTarget | n
   const showScan = scan && (scan.startedAt !== null || running);
   const displayHits = running || showScan ? (scan?.hits ?? []) : (data?.lastScan?.hits ?? []);
   const sessionDead = data ? (!data.session || data.authDead) : false;
+  const selfUserId = userId.trim() || data?.scan.target?.userId || "";
+  const hasTargetInput = !!(username.trim() || userId.trim() || nameQuery.trim());
 
   const startDisabled =
     running || busy === "start-scan" || (!username.trim() && !userId.trim() && !nameQuery.trim());
@@ -227,6 +269,46 @@ export function TgHubPanel({ presetTarget }: { presetTarget?: TgPresetTarget | n
       return false;
     }
     return true;
+  };
+
+  // GLOBAL qidiruv — saqlangan ro'yxatdan tashqari butun Telegram ochiq chatlarida
+  const runGlobalSearch = async () => {
+    if (!guardSession()) return;
+    if (!username.trim() && !userId.trim() && !nameQuery.trim()) {
+      toast({ title: "Maqsad kerak", description: "Skan maydonlarida username/userId yoki ism kiriting.", variant: "destructive" });
+      setTab("skan");
+      return;
+    }
+    setBusy("global-search");
+    try {
+      const res = await fetch("/api/tg-hub", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "global-search",
+          target: {
+            username: username.trim() || undefined,
+            userId: userId.trim() || undefined,
+            nameQuery: nameQuery.trim() || undefined,
+          },
+        }),
+      });
+      const j = (await res.json()) as TgGlobalResult;
+      setGlobalResult(j);
+      if (j.ok) {
+        const own = j.found.filter((m) => m.authoredByTarget).length;
+        toast({
+          title: "Qidiruv tugadi",
+          description: `${j.found.length} ta iz topildi${own > 0 ? `, shundan ${own} tasi maqsadning o'zi yozgan` : ""}.`,
+        });
+      } else {
+        toast({ title: "Qidiruv o'tmadi", description: j.message ?? "Noma'lum xato", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Xato", description: "Server bilan aloqa yo'q", variant: "destructive" });
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
@@ -265,7 +347,9 @@ export function TgHubPanel({ presetTarget }: { presetTarget?: TgPresetTarget | n
       <p className="mt-1.5 text-xs text-muted-foreground leading-relaxed">
         Faqat o&apos;qish rejimi: hech kimga yozilmaydi, hech qayerga qo&apos;shilmaydi. Diniy
         guruhlar avtomatik chiqarib tashlanadi. Qidiruv: @username tilga olinganmi, ism matnda
-        uchraydimi, maqsad ID&apos;si bilan xabar yozganmi.
+        uchraydimi va maqsad ID&apos;si bilan yozgan HAMMA xabarlari (matn + sana + t.me havolasi).
+        «Ochiq chatlar» tabida esa saqlangan ro&apos;yxatdan tashqari butun Telegram public
+        chatlarida qidiriladi.
       </p>
 
       <Tabs value={tab} onValueChange={setTab} className="mt-3">
@@ -277,6 +361,12 @@ export function TgHubPanel({ presetTarget }: { presetTarget?: TgPresetTarget | n
             <DatabaseZap className="w-3.5 h-3.5" />
             Guruhlar
             {data?.groups && <Badge variant="secondary" className="h-4 px-1 text-[10px]">{data.groups.length}</Badge>}
+          </TabsTrigger>
+          <TabsTrigger value="ochiq" className="text-xs gap-1.5">
+            <Globe className="w-3.5 h-3.5" /> Ochiq chatlar
+            {globalResult?.ok && globalResult.found.length > 0 && (
+              <Badge variant="secondary" className="h-4 px-1 text-[10px]">{globalResult.found.length}</Badge>
+            )}
           </TabsTrigger>
         </TabsList>
 
@@ -454,6 +544,36 @@ export function TgHubPanel({ presetTarget }: { presetTarget?: TgPresetTarget | n
                       ))}
                     </ul>
                   )}
+                  {h.msgs && h.msgs.length > 0 && (
+                    <div className="space-y-1.5 mt-1">
+                      {h.msgs.slice(0, 6).map((m) => (
+                        <div key={m.id} className="rounded border bg-black/20 px-2 py-1.5 space-y-0.5">
+                          <div className="flex items-center gap-1.5">
+                            {m.date && <span className="font-mono text-[10px] text-muted-foreground">{m.date}</span>}
+                            {m.fromUserId && m.fromUserId === selfUserId && (
+                              <Badge variant="outline" className="h-3.5 px-1 text-[9px] bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
+                                o&apos;zi yozgan
+                              </Badge>
+                            )}
+                            {m.link && (
+                              <a
+                                href={m.link}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="ml-auto text-[10px] text-primary hover:underline inline-flex items-center gap-0.5"
+                              >
+                                <ExternalLink className="w-2.5 h-2.5" /> Ochish
+                              </a>
+                            )}
+                          </div>
+                          <p className="whitespace-pre-wrap break-words line-clamp-3">{m.text}</p>
+                        </div>
+                      ))}
+                      {h.msgs.length > 6 && (
+                        <p className="text-[10px] text-muted-foreground">+ {h.msgs.length - 6} ta yana — «Ochish» bilan Telegram&apos;da ko&apos;riladi</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))
             )}
@@ -575,6 +695,128 @@ export function TgHubPanel({ presetTarget }: { presetTarget?: TgPresetTarget | n
             mavjudligi aniqlanadi (a&apos;zolar soni, kanal/guruh turi). Foydalanuvchi
             hisobiga HECH QANDAY iz qolmaydi.
           </p>
+        </TabsContent>
+
+        {/* ===== OCHIQ CHATLAR (GLOBAL) ===== */}
+        <TabsContent value="ochiq" className="mt-3 space-y-3">
+          <div className="rounded-md border bg-secondary/20 p-3 text-xs space-y-1">
+            <p className="font-medium">Saqlangan ro&apos;yxatdan tashqari — butun Telegram ochiq (public) chatlarida qidirish:</p>
+            <ul className="list-disc pl-4 text-muted-foreground space-y-0.5">
+              <li>@username va ism qaysi kanal/guruhda tilga olinganini topadi</li>
+              <li>maqsadning o&apos;zi yozgan xabarlar ID bo&apos;yicha aniq ajratiladi</li>
+              <li>isma o&apos;xshash ochiq kanal/guruhlar ro&apos;yxati</li>
+            </ul>
+            <p className="text-muted-foreground">
+              Maqsad sifatida Skan maydonlari ishlatiladi. Diniy chatlar bu qidiruvdan ham
+              chiqarib tashlanadi (O&apos;zbekiston qonunchiligi).
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              disabled={!hasTargetInput || busy === "global-search" || running}
+              onClick={() => void runGlobalSearch()}
+            >
+              {busy === "global-search" ? (
+                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+              ) : (
+                <Globe className="w-4 h-4 mr-1" />
+              )}
+              Telegram bo&apos;ylab qidirish
+            </Button>
+            {globalResult?.ok && (
+              <Button size="sm" variant="ghost" onClick={() => setGlobalResult(null)}>
+                <RefreshCw className="w-4 h-4 mr-1" /> Natijalarni tozalash
+              </Button>
+            )}
+          </div>
+
+          {globalResult && (
+            <div className="space-y-2">
+              {!globalResult.ok ? (
+                <Alert variant="destructive" className="py-2">
+                  <AlertTriangle className="w-4 h-4" />
+                  <AlertDescription className="text-xs">{globalResult.message}</AlertDescription>
+                </Alert>
+              ) : (
+                <>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                    {globalResult.queries.map((q) => (
+                      <span key={q.q} className="font-mono">
+                        {q.q}: <b className="text-foreground">{q.count}</b>
+                        {q.error ? <span className="text-amber-400"> ({q.error})</span> : null}
+                      </span>
+                    ))}
+                    {globalResult.religiousSkipped > 0 && (
+                      <span>diniy filtrga tushgan: {globalResult.religiousSkipped}</span>
+                    )}
+                  </div>
+                  {globalResult.found.length === 0 ? (
+                    <div className="text-center py-6 text-sm text-muted-foreground border rounded-md border-dashed">
+                      Ochiq chatlarda iz topilmadi — maqsad public joylarda ochiq iz qoldirmagan.
+                    </div>
+                  ) : (
+                    globalResult.found.map((m, i) => (
+                      <div key={`${m.chatId}-${m.msgId}-${i}`} className="rounded-md border p-2.5 text-xs space-y-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {m.authoredByTarget && (
+                            <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/40" variant="outline">
+                              O&apos;ZI YOZGAN
+                            </Badge>
+                          )}
+                          <span className="font-medium">{m.chatTitle}</span>
+                          {m.chatUsername && <span className="font-mono text-muted-foreground">@{m.chatUsername}</span>}
+                          {m.date && <span className="font-mono text-muted-foreground ml-auto">{m.date}</span>}
+                        </div>
+                        <p className="whitespace-pre-wrap break-words text-foreground/90">{m.text}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {m.link && (
+                            <a
+                              href={m.link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-primary hover:underline inline-flex items-center gap-1"
+                            >
+                              <ExternalLink className="w-3 h-3" /> Ochish
+                            </a>
+                          )}
+                          {m.senderName && (
+                            <span className="text-muted-foreground">
+                              yozuvchi: {m.senderName}
+                              {m.senderUserId ? ` · ID ${m.senderUserId}` : ""}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                  {globalResult.chatsNamedLike.length > 0 && (
+                    <div className="space-y-1 pt-1">
+                      <p className="text-xs font-medium">Isma o&apos;xshash ochiq chatlar:</p>
+                      {globalResult.chatsNamedLike.map((c) => (
+                        <div
+                          key={c.username ?? c.title}
+                          className="flex flex-wrap items-center gap-1.5 text-xs border rounded-md px-2.5 py-1.5"
+                        >
+                          <span className="font-medium truncate max-w-[240px]">{c.title}</span>
+                          {c.username && <span className="font-mono text-muted-foreground">@{c.username}</span>}
+                          <Badge variant="secondary" className="ml-auto h-4 px-1 text-[10px]">
+                            {c.kind === "channel" ? "kanal" : "guruh"} · {c.members.toLocaleString("en-US")}
+                          </Badge>
+                          {c.link && (
+                            <a href={c.link} target="_blank" rel="noreferrer" className="text-primary hover:underline inline-flex items-center gap-0.5">
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </TabsContent>
       </Tabs>
 
