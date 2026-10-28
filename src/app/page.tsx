@@ -78,6 +78,13 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { TerminalLog } from "@/components/osint/terminal-log";
@@ -382,6 +389,13 @@ export default function Home() {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [target, setTarget] = useState<{ type: TargetType; query: string } | null>(null);
   const [activeLabel, setActiveLabel] = useState<string | null>(null);
+
+  // TG guruh/kanal qidiruvi — BITTA KNOPKA: bosilganda ochiladigan dialog
+  // (panel doim ko'rinib turmaydi — faqat kerak bo'lganda chaqiriladi)
+  const [tgOpen, setTgOpen] = useState(false);
+  const [tgPreset, setTgPreset] = useState<
+    { username?: string; userId?: string; nameQuery?: string } | null
+  >(null);
 
   const [pendingCandidates, setPendingCandidates] = useState<PendingPivot[]>([]);
   const [scansDone, setScansDone] = useState(0);
@@ -1670,6 +1684,24 @@ export default function Home() {
     }
   };
 
+  // ===== TG guruh/kanal qidiruvi — BITTA KNOPKA =====
+  // Bosilganda: joriy maqsad (username / ism) panelda avtomatik to'ldiriladi.
+  // username → @username tilga olingan xabarlar; name → ism matnda;
+  // qolgan hollarda panelda qo'lda kiritiladi (userId ham shu yerda).
+  const openTgSearch = () => {
+    let preset: { username?: string; userId?: string; nameQuery?: string } | null = null;
+    if (!multiMode) {
+      const active = step !== "idle" ? target : null;
+      const t = active?.type ?? type;
+      const raw = active?.query ?? input.trim();
+      const q = raw ? normalizeTargetValue(t, raw) : "";
+      if (t === "username" && q) preset = { username: q };
+      else if (t === "name" && q) preset = { nameQuery: q };
+    }
+    setTgPreset(preset);
+    setTgOpen(true);
+  };
+
   const totalResults = modules.reduce((acc, m) => acc + m.count, 0);
   const currentTypeLabel = TARGET_TYPES.find((t) => t.value === type)?.label ?? type;
   const stats: SourceStat[] = modules.map((m) => ({
@@ -1766,9 +1798,8 @@ export default function Home() {
           </AlertDescription>
         </Alert>
 
-        {/* TG Guruh/Kanal skaneri — read-only ichki qidiruv */}
-        <TgHubPanel />
-
+        {/* TG guruh/kanal qidiruvi — endi bitta knopka orqali (quyida, qidiruv shaklida).
+            Panel doim ko'rinib turmaydi — foydalanuvchi kerak paytda ochadi. */}
         {/* Qidiruv formasi */}
         <section className={step === "idle" ? "text-center pt-6 pb-2" : ""}>
           {step === "idle" && (
@@ -1851,6 +1882,15 @@ export default function Home() {
                   Skanerlash
                 </Button>
               )}
+            </div>
+            {/* BITTA KNOPKA — Telegram guruh/kanallarida yozilgan xabarlar qidiruvi.
+                Panel doim ko'rinmaydi; bosilganda dialog ochiladi, maqsad
+                avtomatik to'ldiriladi (username/ism). */}
+            <div className="flex justify-center mt-3">
+              <Button variant="outline" size="sm" className="gap-2 h-9" onClick={openTgSearch}>
+                <Send className="w-4 h-4 text-primary" />
+                Telegram guruh/kanallarida yozilgan xabarlarni qidirish
+              </Button>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-2 mt-3">
               <span className="text-[11px] text-muted-foreground mr-1 flex items-center gap-1">
@@ -2312,6 +2352,24 @@ export default function Home() {
           </section>
         )}
       </main>
+
+      {/* ===== TG GURUH/KANAL QIDIRUVI — dialog (bitta knopka orqali ochiladi) ===== */}
+      <Dialog open={tgOpen} onOpenChange={setTgOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Send className="w-4 h-4 text-primary" />
+              Telegram guruh/kanallarida qidiruv
+            </DialogTitle>
+            <DialogDescription className="text-xs leading-relaxed">
+              Ro&apos;yxatdagi guruh/kanallar ichida maqsadning yozgan xabarlari va uni
+              tilga olishlari READ-ONLY qidiriladi — hech kimga yozilmaydi, hech qayerga
+              qo&apos;shilmaydi. Diniy guruhlar avtomatik chiqariladi.
+            </DialogDescription>
+          </DialogHeader>
+          <TgHubPanel presetTarget={tgPreset} />
+        </DialogContent>
+      </Dialog>
 
       <footer className="mt-auto border-t">
         <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row items-center gap-2 text-xs text-muted-foreground">

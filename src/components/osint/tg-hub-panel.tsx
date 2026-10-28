@@ -112,7 +112,13 @@ const STATUS_UZ: Record<string, string> = {
   skipped: "peer yo'q",
 };
 
-export function TgHubPanel() {
+export interface TgPresetTarget {
+  username?: string;
+  userId?: string;
+  nameQuery?: string;
+}
+
+export function TgHubPanel({ presetTarget }: { presetTarget?: TgPresetTarget | null } = {}) {
   const { toast } = useToast();
   const [data, setData] = useState<TgStatus | null>(null);
   const [tab, setTab] = useState("skan");
@@ -126,6 +132,20 @@ export function TgHubPanel() {
   const [batchInput, setBatchInput] = useState("");
   const [batchResult, setBatchResult] = useState<string[] | null>(null);
   const logBoxRef = useRef<HTMLDivElement>(null);
+
+  // Asosiy qidiruvdan o'tkazilgan maqsad — panelda maydonlarni avtomatik to'ldiramiz
+  const presetKey = presetTarget ? JSON.stringify(presetTarget) : "";
+  useEffect(() => {
+    if (!presetKey) return;
+    try {
+      const p = JSON.parse(presetKey) as TgPresetTarget;
+      if (p.username) setUsername(p.username);
+      if (p.userId) setUserId(p.userId);
+      if (p.nameQuery) setNameQuery(p.nameQuery);
+    } catch {
+      /* ignore */
+    }
+  }, [presetKey]);
 
   const fetchStatus = useCallback(
     async (full: boolean) => {
