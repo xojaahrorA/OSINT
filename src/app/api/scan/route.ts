@@ -28,6 +28,7 @@ import {
   premiumKeyMissing,
   premiumFind,
   premiumHint,
+  drainPremiumErrors,
 } from "@/lib/premium-sources";
 import { loadDbKeys } from "@/lib/keys";
 
@@ -618,6 +619,14 @@ export async function POST(req: NextRequest) {
             )
         ),
       ]);
+
+      // Kalitli manbalardagi MUAMMOLARNI KO'RSATISH: noto'g'ri kalit / limit
+      // tugagan manba jimlikda bo'sh qaytardi — endi terminalda aniq yoziladi.
+      // (bu LOG emas, faqat muammo bo'lsa chiqadi — muvaffaqiyatli manbalar shovqin solmaydi)
+      for (const pe of drainPremiumErrors()) {
+        const meta = premiumFind(pe.id);
+        log("warn", `[${meta?.title ?? pe.id}] MUAMMO: ${pe.msg}`);
+      }
 
       // Yakuniy module_done hodisalari
       for (const m of applicable) {

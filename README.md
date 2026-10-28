@@ -101,7 +101,14 @@ Majburiy rejim: `.env` faylga `SEARCH_ENGINE=open` yozsangiz, Z.ai umuman ishlat
 
 ### Premium manbalar (OSINT Framework'dagi pullik/bepul xizmatlar)
 
-HTML dvigatellar ba'zan bloklanadi (403/429/captcha) — bu ularning bot-himoyasi. Bunga doimiy yechim: **API kalitli manbalar**. Kalitni `.env` faylga yozasiz — shu zahoti modul sifatida skanerga qo'shiladi; kalit yo'q bo'lsa manba jimgina o'tkaziladi, skaner to'xtamaydi.
+HTML dvigatellar ba'zan bloklanadi (403/429/captcha) — bu ularning bot-himoyasi. Bunga doimiy yechim: **API kalitli manbalar**. Kalitni **Sozlamalar sahifasiga** kiritasiz (yoki `.env` faylga) — shu zahoti modul sifatida skanerga qo'shiladi; kalit yo'q bo'lsa manba jimgina o'tkaziladi, skaner to'xtamaydi.
+
+**«Tekshirish» tugmasi (⚡) — kalitni jonli sinov:**
+- Har bir kiritilgan kalit servisga **eng kichik real so'rov** yuborib tekshiriladi: yashil ✓ = ishlayapti, qizil ✗ = rad etildi (HTTP 401/403 — qiymatni tekshiring), sariq = kalit to'g'ri lekin limit tugagan, ko'k = tarmoq muammosi (keyinroq qayta tekshiring)
+- Yangi qiymatni **saqlamasdan** ham tekshirsa bo'ladi — maydonga yozib zudlik bilan ⚡ bosing
+- HIBP'da 404 = yaxshi javob (kalit qabul qilindi, sinov emaili shunchaki oqishlarda yo'q)
+
+**Skan vaqtida ham kuzatuv:** kalitli manba skanda muammo bersa (noto'g'ri kalit, limit tugagan), terminal jurnalida aniq yoziladi: `[Google (Serper)] MUAMMO: kalit rad etildi (HTTP 403) — SERPER_API_KEY qiymatini tekshiring`. «Ma'lumot yo'q» bilan «kalit buzilgan»ni farqlash endi mumkin.
 
 | Kalit (`.env`) | Servis | Nima beradi | Bepul limit |
 |---|---|---|---|

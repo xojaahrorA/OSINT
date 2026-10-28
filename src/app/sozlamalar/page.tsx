@@ -20,6 +20,7 @@ import {
   ExternalLink,
   KeyRound,
   Loader2,
+  PlugZap,
   Save,
   Trash2,
   XCircle,
@@ -41,12 +42,19 @@ interface SourceMeta {
   keys: KeyPart[];
   active: boolean;
 }
+interface TestResult {
+  ok: boolean;
+  status: string;
+  message: string;
+}
 
 export default function SozlamalarPage() {
   const [sources, setSources] = useState<SourceMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
+  const [testing, setTesting] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
   const { toast } = useToast();
 
   const load = useCallback(async () => {
@@ -95,11 +103,38 @@ export default function SozlamalarPage() {
       const j = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok || !j.ok) throw new Error(j.error ?? "O'chirish amalga oshmadi");
       toast({ title: "Kalit o'chirildi", description: envKey });
+      setTestResults((r) => {
+        const n = { ...r };
+        delete n[envKey];
+        return n;
+      });
       await load();
     } catch (e) {
       toast({ title: "Xato", description: String(e).slice(0, 120), variant: "destructive" });
     } finally {
       setSaving(null);
+    }
+  };
+
+  // JONLI TEKSHIRUV: kalit servisdan kichik so'rov bilan sinovdan o'tadi.
+  // Yangi qiymat yozilgan bo'lsa — SAQLAMASDAN tekshiradi; yo'q bo'lsa saqlanganni.
+  const test = async (envKey: string) => {
+    setTesting(envKey);
+    try {
+      const res = await fetch("/api/keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "test", envKey, value: (drafts[envKey] ?? "").trim() || undefined }),
+      });
+      const j = (await res.json()) as TestResult & { error?: string };
+      setTestResults((r) => ({ ...r, [envKey]: j }));
+      if (j.ok) toast({ title: "Kalit ishlayapti", description: j.message });
+      else if (j.status === "limited") toast({ title: "Limit tugagan", description: j.message, variant: "destructive" });
+      else toast({ title: "Muammo aniqlandi", description: j.message, variant: "destructive" });
+    } catch (e) {
+      setTestResults((r) => ({ ...r, [envKey]: { ok: false, status: "error", message: String(e).slice(0, 100) } }));
+    } finally {
+      setTesting(null);
     }
   };
 
@@ -147,6 +182,8 @@ export default function SozlamalarPage() {
           Xavfsizlik: kalitlar faqat server tomonda o&apos;qiladi, sahifada faqat maskalangan
           ko&apos;rinish (oxirgi 4 belgi) ko&apos;rsatiladi. Hamma kalit <b>bepul</b> ro&apos;yxatdan
           o&apos;tish bilan olinadi — har bir manba ostida havola bor.
+          <b className="ml-1">«Tekshirish»</b> tugmasi (⚡) kalitni haqiqiy so&apos;rov bilan
+          sinaydi: yashil = ishlayapti, qizil = rad etildi, sariq = limit tugagan.
         </div>
 
         {loading ? (
@@ -186,50 +223,92 @@ export default function SozlamalarPage() {
                   </a>
                 </div>
                 <div className="grid gap-2">
-                  {s.keys.map((k) => (
-                    <div key={k.envKey} className="flex items-center gap-2">
-                      <code className="text-xs w-44 sm:w-56 shrink-0 text-muted-foreground truncate">
-                        {k.envKey}
-                      </code>
-                      <Input
-                        value={drafts[k.envKey] ?? ""}
-                        onChange={(e) =>
-                          setDrafts((d) => ({ ...d, [k.envKey]: e.target.value }))
-                        }
-                        placeholder={
-                          k.set
-                            ? `Saqlangan: ${k.masked} (${k.from}) — yangisini kiritsangiz almashtiriladi`
-                            : "Kalitni shu yerga kiritib «Saqlash»ni bosing"
-                        }
-                        className="h-9 text-sm"
-                        type="password"
-                        autoComplete="off"
-                      />
-                      <Button
-                        size="sm"
-                        className="h-9 shrink-0"
-                        disabled={!drafts[k.envKey]?.trim() || saving === k.envKey}
-                        onClick={() => void save(k.envKey)}
-                      >
-                        {saving === k.envKey ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Save className="w-4 h-4" />
+                  {s.keys.map((k) => {
+                    const tr = testResults[k.envKey];
+                    return (
+                      <div key={k.envKey}>
+                        <div className="flex items-center gap-2">
+                          <code className="text-xs w-36 sm:w-48 shrink-0 text-muted-foreground truncate">
+                            {k.envKey}
+                          </code>
+                          <Input
+                            value={drafts[k.envKey] ?? ""}
+                            onChange={(e) =>
+                              setDrafts((d) => ({ ...d, [k.envKey]: e.target.value }))
+                            }
+                            placeholder={
+                              k.set
+                                ? `Saqlangan: ${k.masked} (${k.from}) — yangisini kiritsangiz almashtiriladi`
+                                : "Kalitni shu yerga kiritib «Saqlash»ni bosing"
+                            }
+                            className="h-9 text-sm"
+                            type="password"
+                            autoComplete="off"
+                          />
+                          <Button
+                            size="sm"
+                            className="h-9 shrink-0"
+                            disabled={!drafts[k.envKey]?.trim() || saving === k.envKey}
+                            onClick={() => void save(k.envKey)}
+                          >
+                            {saving === k.envKey ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Save className="w-4 h-4" />
+                            )}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-9 shrink-0"
+                            title="Kalitni real so'rov bilan tekshirish — noto'g'ri kalitni 1 bosishda aniqlaydi"
+                            disabled={testing === k.envKey || (!k.set && !drafts[k.envKey]?.trim())}
+                            onClick={() => void test(k.envKey)}
+                          >
+                            {testing === k.envKey ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <PlugZap className="w-4 h-4" />
+                            )}
+                          </Button>
+                          {k.set && k.from === "db" && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-9 shrink-0 text-destructive hover:text-destructive"
+                              disabled={saving === k.envKey}
+                              onClick={() => void remove(k.envKey)}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          )}
+                        </div>
+                        {tr && (
+                          <div
+                            className={`mt-1.5 ml-1 text-xs flex items-start gap-1.5 ${
+                              tr.ok
+                                ? "text-emerald-500"
+                                : tr.status === "limited"
+                                  ? "text-amber-500"
+                                  : tr.status === "error"
+                                    ? "text-sky-500"
+                                    : "text-destructive"
+                            }`}
+                          >
+                            {tr.ok ? (
+                              <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                            ) : (
+                              <XCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                            )}
+                            <span>
+                              {tr.message}
+                              {!tr.ok && tr.status === "bad" ? " — «Tekshirish» tugmasi sinov so'rovini yubordi va servis kalitni qabul qilmadi." : ""}
+                            </span>
+                          </div>
                         )}
-                      </Button>
-                      {k.set && k.from === "db" && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-9 shrink-0 text-destructive hover:text-destructive"
-                          disabled={saving === k.envKey}
-                          onClick={() => void remove(k.envKey)}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
-                      )}
-                    </div>
-                  ))}
+                      </div>
+                    );
+                  })}
                 </div>
               </Card>
             ))}

@@ -28,19 +28,48 @@ const safe = async <T>(p: Promise<T>): Promise<T | null> => {
   }
 };
 
+// Xato yozuvlari — skan terminalida KO'RINISHI uchun. Oldin noto'g'ri kalit
+// jimlikda bo'sh natija qaytarardi ("ma'lumot yo'q"dan farqi yo'q edi).
+// Skan route drainPremiumErrors() bilan bularni warn sifatida ko'rsatadi.
+const premiumErrors = new Map<string, string>();
+
+export function notePremiumError(id: string, msg: string): void {
+  if (premiumErrors.has(id)) return; // birinchi xato eng muhimi — saqlaymiz
+  premiumErrors.set(id, msg.slice(0, 120));
+}
+
+export function drainPremiumErrors(): { id: string; msg: string }[] {
+  const out = [...premiumErrors.entries()].map(([id, msg]) => ({ id, msg }));
+  premiumErrors.clear();
+  return out;
+}
+
 async function jsonFetch<T>(
   url: string,
-  init?: RequestInit & { timeoutMs?: number }
+  init?: RequestInit & { timeoutMs?: number; reportTo?: string }
 ): Promise<T | null> {
-  const { timeoutMs = 12_000, ...rest } = init ?? {};
+  const { timeoutMs = 12_000, reportTo, ...rest } = init ?? {};
   try {
     const res = await fetch(url, {
       ...rest,
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      if (reportTo) {
+        const detail =
+          res.status === 401 || res.status === 403
+            ? `kalit rad etildi (HTTP ${res.status}) — qiymatni tekshiring`
+            : res.status === 429
+              ? "limit tugagan (429) — keyinroq qayta urinib ko'ring"
+              : `HTTP ${res.status}`;
+        notePremiumError(reportTo, detail);
+      }
+      return null;
+    }
     return (await res.json()) as T;
-  } catch {
+  } catch (e) {
+    if (reportTo)
+      notePremiumError(reportTo, `tarmoq xatosi: ${String((e as Error)?.message ?? e).slice(0, 60)}`);
     return null;
   }
 }
@@ -231,7 +260,13 @@ export async function serperSource(target: string): Promise<SearchResultItem[]> 
         body: JSON.stringify({ q: target, num: 10 }),
         signal: AbortSignal.timeout(12_000),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403)
+          notePremiumError("serper", `kalit rad etildi (HTTP ${res.status}) — SERPER_API_KEY qiymatini tekshiring`);
+        else if (res.status === 429) notePremiumError("serper", "limit tugagan (429) — keyingi skanda qayta ishlaydi");
+        else notePremiumError("serper", `HTTP ${res.status}`);
+        throw new Error(`HTTP ${res.status}`);
+      }
       return (await res.json()) as SerperResp;
     })()
   );
@@ -285,7 +320,7 @@ export async function braveApiSource(target: string): Promise<SearchResultItem[]
   const key = keyOf("BRAVE_API_KEY")!;
   const data = await jsonFetch<BraveApiResp>(
     `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(target)}&count=10`,
-    { headers: { Accept: "application/json", "X-Subscription-Token": key } }
+    { headers: { Accept: "application/json", "X-Subscription-Token": key }, reportTo: "brave-api" }
   );
   const out: SearchResultItem[] = [];
   for (const r of data?.web?.results ?? []) {
@@ -314,7 +349,8 @@ export async function googleCseSource(target: string): Promise<SearchResultItem[
   const key = keyOf("GOOGLE_CSE_KEY")!;
   const cx = keyOf("GOOGLE_CSE_CX")!;
   const data = await jsonFetch<CseResp>(
-    `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(key)}&cx=${encodeURIComponent(cx)}&q=${encodeURIComponent(target)}&num=10`
+    `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(key)}&cx=${encodeURIComponent(cx)}&q=${encodeURIComponent(target)}&num=10`,
+    { reportTo: "google-cse" }
   );
   const out: SearchResultItem[] = [];
   for (const r of data?.items ?? []) {
@@ -343,6 +379,7 @@ export async function tavilySource(target: string): Promise<SearchResultItem[]> 
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ api_key: key, query: target, max_results: 8 }),
+    reportTo: "tavily",
   });
   const out: SearchResultItem[] = [];
   for (const r of data?.results ?? []) {
@@ -383,7 +420,13 @@ export async function hibpSource(target: string): Promise<SearchResultItem[]> {
       );
       // 404 — bu email hech qanday oqishda yo'q: bu ham FOYDALI javob
       if (r.status === 404) return [] as HibpBreach[];
-      if (!res_ok(r)) throw new Error(`HTTP ${r.status}`);
+      if (!res_ok(r)) {
+        if (r.status === 401 || r.status === 403)
+          notePremiumError("hibp", `kalit rad etildi (HTTP ${r.status}) — HIBP_API_KEY qiymatini tekshiring`);
+        else if (r.status === 429) notePremiumError("hibp", "so'rov limiti oshdi (429) — keyinroq qayta urinib ko'ring");
+        else notePremiumError("hibp", `HTTP ${r.status}`);
+        throw new Error(`HTTP ${r.status}`);
+      }
       return (await r.json()) as HibpBreach[];
     })()
   );
@@ -440,7 +483,7 @@ export async function emailRepSource(target: string): Promise<SearchResultItem[]
   const r = await safe(
     jsonFetch<EmailRepResp>(
       `https://emailrep.io/${encodeURIComponent(email)}?key=${encodeURIComponent(key)}`,
-      { timeoutMs: 12_000 }
+      { timeoutMs: 12_000, reportTo: "emailrep" }
     )
   );
   if (!r || !r.reputation) return [];
@@ -514,7 +557,8 @@ export async function hunterSource(target: string): Promise<SearchResultItem[]> 
   if (target.includes("@")) {
     // Email tasdiqlash — ba'zan egasining ism-familiyasini ham qaytaradi
     const d = await jsonFetch<HunterVerify>(
-      `https://api.hunter.io/v2/email-verifier?email=${encodeURIComponent(target)}&api_key=${encodeURIComponent(key)}`
+      `https://api.hunter.io/v2/email-verifier?email=${encodeURIComponent(target)}&api_key=${encodeURIComponent(key)}`,
+      { reportTo: "hunter" }
     );
     const v = d?.data;
     if (v) {
@@ -540,7 +584,8 @@ export async function hunterSource(target: string): Promise<SearchResultItem[]> 
 
   // Domen bo'yicha — kompaniyadagi email/ism-familiyalar (kuchli pivot manba)
   const d = await jsonFetch<HunterDomain>(
-    `https://api.hunter.io/v2/domain-search?domain=${encodeURIComponent(target)}&limit=10&api_key=${encodeURIComponent(key)}`
+    `https://api.hunter.io/v2/domain-search?domain=${encodeURIComponent(target)}&limit=10&api_key=${encodeURIComponent(key)}`,
+    { reportTo: "hunter" }
   );
   const org = d?.data?.organization ?? target;
   for (const e of d?.data?.emails ?? []) {
@@ -585,7 +630,8 @@ export async function shodanSource(target: string): Promise<SearchResultItem[]> 
   if (!isIp) {
     // Domen → Shodan DNS resolve → birinchi IP bo'yicha host ma'lumoti
     const dns = await jsonFetch<ShodanDns>(
-      `https://api.shodan.io/dns/resolve?hostname=${encodeURIComponent(target)}&key=${encodeURIComponent(key)}`
+      `https://api.shodan.io/dns/resolve?hostname=${encodeURIComponent(target)}&key=${encodeURIComponent(key)}`,
+      { reportTo: "shodan" }
     );
     const first = Object.values(dns ?? {})[0]?.[0]?.value;
     if (!first) return [];
@@ -593,7 +639,8 @@ export async function shodanSource(target: string): Promise<SearchResultItem[]> 
   }
 
   const h = await jsonFetch<ShodanHost>(
-    `https://api.shodan.io/shodan/host/${encodeURIComponent(ip)}?key=${encodeURIComponent(key)}`
+    `https://api.shodan.io/shodan/host/${encodeURIComponent(ip)}?key=${encodeURIComponent(key)}`,
+    { reportTo: "shodan" }
   );
   if (!h) return [];
   const facts = [
@@ -645,7 +692,8 @@ export async function numlookupSource(target: string): Promise<SearchResultItem[
   if (!num.startsWith("+")) num = `+${num.replace(/^8(?=9\d{9}$)/, "7")}`;
   const key = keyOf("NUMLOOKUP_API_KEY")!;
   const d = await jsonFetch<NumLookupResp>(
-    `https://api.numlookupapi.com/v1/validate/${encodeURIComponent(num)}?apikey=${encodeURIComponent(key)}`
+    `https://api.numlookupapi.com/v1/validate/${encodeURIComponent(num)}?apikey=${encodeURIComponent(key)}`,
+    { reportTo: "numlookup" }
   );
   if (!d) return [];
   return [
@@ -684,7 +732,8 @@ export async function ipinfoSource(target: string): Promise<SearchResultItem[]> 
   if (!/^(?:\d{1,3}\.){3}\d{1,3}$/.test(target)) return [];
   const token = keyOf("IPINFO_TOKEN")!;
   const d = await jsonFetch<IpinfoResp>(
-    `https://ipinfo.io/${encodeURIComponent(target)}/json?token=${encodeURIComponent(token)}`
+    `https://ipinfo.io/${encodeURIComponent(target)}/json?token=${encodeURIComponent(token)}`,
+    { reportTo: "ipinfo" }
   );
   if (!d || d.error) return [];
   return [
@@ -731,9 +780,15 @@ export async function otxSource(target: string): Promise<SearchResultItem[]> {
         headers,
         signal: AbortSignal.timeout(12_000),
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        if (res.status === 400 || res.status === 403)
+          notePremiumError("otx", `kalit rad etildi (HTTP ${res.status}) — OTX_API_KEY qiymatini tekshiring`);
+        else notePremiumError("otx", `HTTP ${res.status}`);
+        return null;
+      }
       return (await res.json()) as T;
-    } catch {
+    } catch (e) {
+      notePremiumError("otx", `tarmoq xatosi: ${String((e as Error)?.message ?? e).slice(0, 60)}`);
       return null;
     }
   };

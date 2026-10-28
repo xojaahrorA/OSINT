@@ -12,6 +12,7 @@ import {
   maskKey,
 } from "@/lib/keys";
 import { PREMIUM_SOURCES, premiumKeySet } from "@/lib/premium-sources";
+import { testKeyLive } from "@/lib/key-test";
 
 export async function GET() {
   await loadDbKeys(); // env'dagi kalitlar bilan birga holatni yangilaymiz
@@ -43,12 +44,41 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  let body: { envKey?: string; value?: string };
+  let body: { action?: string; envKey?: string; value?: string };
   try {
     body = await req.json();
   } catch {
     return Response.json({ error: "Noto'g'ri so'rov tanasi" }, { status: 400 });
   }
+
+  const allowed = new Set(
+    PREMIUM_SOURCES.flatMap((s) => [s.envKey, ...(s.envKey2 ? [s.envKey2] : [])])
+  );
+
+  // JONLI TEKSHIRUV: kalit servisga eng kichik so'rov yuboriladi va holati
+  // qaytariladi (ok/bad/limited/error). value berilsa — SAQLAMASDAN tekshiradi,
+  // berilmasa — saqlangan (yoki .env'dagi) qiymat tekshiriladi.
+  if (body.action === "test") {
+    const envKey = (body.envKey ?? "").trim();
+    if (!envKey || !allowed.has(envKey)) {
+      return Response.json({ ok: false, status: "missing", message: "Noma'lum kalit nomi" }, { status: 400 });
+    }
+    let value = (body.value ?? "").trim();
+    if (!value) {
+      await loadDbKeys();
+      value = process.env[envKey]?.trim() ?? "";
+    }
+    if (!value) {
+      return Response.json({
+        ok: false,
+        status: "missing",
+        message: "Kalit hali kiritilmagan — avval saqlang yoki qiymatini yozib tekshiring",
+      });
+    }
+    const r = await testKeyLive(envKey, value);
+    return Response.json(r);
+  }
+
   const envKey = (body.envKey ?? "").trim();
   const value = (body.value ?? "").trim();
   if (!envKey || !value) {
@@ -58,9 +88,6 @@ export async function POST(req: NextRequest) {
     );
   }
   // Faqat ma'lum kalit nomlariga ruxsat (PREMIUM_SOURCES envKey'lari)
-  const allowed = new Set(
-    PREMIUM_SOURCES.flatMap((s) => [s.envKey, ...(s.envKey2 ? [s.envKey2] : [])])
-  );
   if (!allowed.has(envKey)) {
     return Response.json({ error: `Noma'lum kalit nomi: ${envKey}` }, { status: 400 });
   }
