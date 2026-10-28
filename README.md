@@ -132,6 +132,42 @@ Oddiy qidiruv tizimlari t.me ichidagi kontentni deyarli indekslamaydi — shunin
 
 Telefon raqam bo'yicha Telegram'ni passiv tekshirish imkoni yo'q (Telegram shaxsiy raqamlarni yashiradi) — telefon uchun «Telegram izlari» va «Telefon izlari» modullari ishlaydi.
 
+### Telegram guruh/kanal qidiruvi (MTProto — foydalanuvchi sessiyasi bilan)
+
+Qidiruv tizimlari va Bot API ko'rinmaydigan joylar uchun: ilovaga **bitta knopka** orqali ochiladigan to'liq Telegram guruh/kanal qidiruvi qo'shilgan. Asosiy sahifada «**Telegram guruh/kanallarida yozilgan xabarlarni qidirish**» tugmasini bosasiz — panel ochiladi va maqsad avtomatik to'ldiriladi.
+
+**Xavfsizlik qoidalari (majburiy, kod bilan kafolatlangan):**
+- **FAQAT O'QISH (read-only)** — hech kimga xabar yozilmaydi, hech qayerga obuna bo'linmaydi/qo'shilmaydi, hech qanday yozuv qoldiradigan amal chaqirilmaydi
+- **Diniy filtr** — diniy kontentli guruh/kanallar (`islom`, `namoz`, `quron`, `masjid` va h.k.) skan QILINMAYDI va natijalarda KO'RSATILMAYDI (O'zbekiston qonunchiligi)
+- **FLOOD himoyasi** — so'rovlar orasida pauza, `FLOOD_WAIT` bo'lsa kutish + retry, guruh o'tkazib yuborilsa ham skan hech qachon yiqilmaydi
+
+**Kirish (login) — 3 qadam:**
+1. Sessiya yo'q bo'lsa panel sariq/qizil ogohlantirish ko'rsatadi → «Login» tugmasi
+2. `api_id` + `api_hash` ([my.telegram.org](https://my.telegram.org) dan olinadi) va telefon raqam kiritiladi
+3. Telegram'ga kelgan 5 xonali kod kiritiladi (2FA yoqilgan bo'lsa parol ham so'raladi — parol HECH QAYERGA SAQLANMAYDI)
+
+Sessiya `scripts/.tg-session.json` faylida saqlanadi — **bu fayl git'ga KIRMAYDI** (`.gitignore`da), chunki unda hisobga kirish kaliti bor. Server ko'chsa qayta login qilish kifoya.
+
+**Qidiruv turlari (maqsad topilgach):**
+
+| Tur | Nima topadi | Texnikasi |
+|---|---|---|
+| **O'zi yozgan xabarlar** | Maqsad ro'yxatdagi guruh/kanallarda SHAXSAN yozgan barcha xabarlar (guruhga 600 tagacha, to'liq paginatsiya) | `messages.search` + `from_id` (ID+accessHash avtomatik aniqlanadi) |
+| **@username tilga olingan** | Boshqalar maqsadni @ orqali tilga olgan xabarlar | `messages.search` matn bo'yicha |
+| **Ism bo'yicha** | Matnda maqsad ismi uchragan xabarlar + kim yozganini tekshirish | `messages.search` + muallif solishtirish |
+| **Global (ochiq chatlar)** | Ro'yxatdan TASHQARI — butun Telegram'dagi ochiq (public) chatlardagi tilga olishlar va maqsad yozgan xabarlar | `messages.searchGlobal` |
+| **Ismiga o'xshash chatlar** | Ismiga o'xshash ochiq guruh/kanallar ro'yxati | `contacts.search` |
+
+Har bir topilgan xabarda: sana, to'liq matn (300 belgigacha), kim yozgani, maqsadning o'zi yozganmi (`authoredByTarget`) va **to'g'ridan-to'g'ri havola** (`t.me/guruh/1234` yoki `t.me/c/...`) — bosib ochib tekshirish mumkin.
+
+**Guruhlar boshqaruvi:**
+- Bitta guruh qo'shish (`@username` yoki `t.me/...` havolasi)
+- «Ko'p qo'shish» — ro'yxatni qatorma-qator yopishtirish (25 tagacha, har biri Telegram'da tekshiriladi)
+- Peer (ID + accessHash) avtomatik yechiladi — skan oldidan «Peerlarni yechish» tugmasi ham bor
+- Diniy guruhlar avtomatik belgilanadi va skan ro'yxatida kulrang ko'rinadi
+
+**Sessiya ishdan chiqsa** (Telegram tomonidan bekor qilingan) — panel qizil ogohlantirish beradi va qayta login so'raydi; skan o'z-o'zidan hech qachon yiqilmaydi.
+
 ### Maltego uslubidagi transformlar
 
 Maltego — link-analiz va transformlar orqali bog'liq obyektlarni ochadigan pullik platforma. OSINT Radar aynan shu transformlarni **bepul manbalar bilan** amalga oshiradi: bir topilmadan boshqa bog'liq obyektlar avtomatik ochiladi.
@@ -212,10 +248,11 @@ src/
 ├── app/
 │   ├── api/
 │   │   ├── scan/        # Avtomatik OSINT skaner (NDJSON streaming)
+│   │   ├── tg-hub/      # Telegram guruh/kanal qidiruvi (login + skan + global)
 │   │   ├── relevance/   # AI natijalarni solishtirish (korrelyatsiya)
 │   │   ├── analyze/     # AI tahlilchi (SSE streaming)
 │   │   └── bookmarks/   # Saqlanganlar CRUD
-│   ├── page.tsx         # Asosiy sahifa (4 bosqichli dvigatel)
+│   ├── page.tsx         # Asosiy sahifa (4 bosqichli dvigatel + TG knopka)
 │   └── layout.tsx
 ├── components/osint/
 │   ├── terminal-log.tsx     # Jonli skaner jurnali
@@ -223,9 +260,13 @@ src/
 │   ├── deep-panel.tsx       # Bosqichlar, manbalar statistikasi, pivotlar
 │   ├── review-panel.tsx     # Shubhali topilmalar (tekshirish/o'tkazib yuborish)
 │   ├── ai-panel.tsx         # AI tahlil paneli
+│   ├── tg-hub-panel.tsx     # TG guruh/kanal qidiruv paneli (bitta knopka orqali)
+│   ├── tg-login-dialog.tsx  # TG login: telefon + kod + 2FA
 │   └── bookmarks-sheet.tsx  # Saqlanganlar oynasi
 └── lib/
     ├── osint.ts         # Modul ta'riflari, so'rov generatorlari, pivot ajratish
+    ├── tg-hub.ts        # TG skaner: messages.search/searchGlobal, FLOOD himoya, diniy filtr
+    ├── tg-login.ts      # MTProto login (sendCode → SignIn → 2FA), sessiya faylga
     └── db.ts            # Prisma klient
 ```
 
